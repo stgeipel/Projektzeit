@@ -1,0 +1,28 @@
+# Projektzeit
+
+Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. This first iteration provides the Rust domain model, SQLite schema and migrations, and a command to initialize a database. The desktop UI, tracking commands, and exports are planned for later increments.
+
+## Build and run
+
+On Windows, install [Rust via rustup](https://rustup.rs/) and the [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the Desktop development with C++ workload and a Windows SDK. Use the MSVC Rust target. On Linux, install rustup and a C compiler toolchain (for example, `build-essential` on Ubuntu). The toolchain file selects Rust 1.95.0. Cargo downloads the toolchain and dependencies on first use. SQLite is bundled, so it does not require a separate installation.
+
+From the repository root, run these commands in PowerShell or a Linux shell.
+
+```sh
+cargo build --locked --workspace
+cargo run --locked -p projektzeit -- --check-db ./projektzeit-dev.sqlite
+```
+
+The command opens or creates the specified database, runs pending migrations, and prints `SQLite-Datenbank ist bereit.` on success. Choose a path on a local disk in an existing directory. Use a disposable development file when testing migrations. Once Cargo has cached dependencies, add `--offline` to build or run without network access.
+
+## Checks
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+```
+
+The CI workflow runs these checks on Windows and Linux. See the [implementation plan and architecture decisions](docs/architecture.md) and the [workbook compatibility findings](docs/workbook-compatibility.md).
+
+The supplied workbook is a local reference in the starter archive. Keep it beside `PROJECT_SPEC.md` for inspection. It contains source metadata and is excluded from version control.
