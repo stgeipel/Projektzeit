@@ -138,6 +138,23 @@ fn weekly_progress_and_midweek_schedule_change_respect_effective_dates() {
 }
 
 #[test]
+fn future_periods_show_the_plan_without_accruing_a_deficit() {
+    let account = account("2026-11-02", 0, [8, 8, 8, 8, 6, 0, 0]);
+    let today = date("2026-11-23");
+    let next_month = date("2026-12-31");
+    let observed = Observations::default();
+    let report = account
+        .report(Period::month(next_month).unwrap(), today, today, &observed)
+        .unwrap();
+    assert_eq!(report.opening_balance, None);
+    assert_eq!(report.closing_balance, None);
+    assert_eq!(report.totals.target, 0);
+    assert_eq!(report.totals.delta, 0);
+    assert_eq!(report.full_planned_target, 176 * 3600);
+    assert_eq!(report.full_planned_target, report.remaining_planned_target);
+}
+
+#[test]
 fn leap_day_and_iso_week_53_at_year_boundary() {
     let leap_day = date("2024-02-29");
     let leap_month = Period::month(leap_day).unwrap();

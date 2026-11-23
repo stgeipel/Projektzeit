@@ -230,7 +230,7 @@ impl Account {
         let opening = self.opening.ok_or(AccountError::MissingOpening)?;
         let through = through.min(period.end).min(today);
         let first_accounted = period.start.max(opening.effective_date);
-        let opening_balance = if first_accounted > period.end {
+        let opening_balance = if first_accounted > through {
             None
         } else if first_accounted == opening.effective_date {
             Some(opening.signed_seconds)
@@ -270,10 +270,9 @@ impl Account {
                 observed,
             });
         }
-        let closing_balance = match opening_balance {
-            Some(opening) if first_accounted <= through => Some(totals.apply(opening)?),
-            _ => None,
-        };
+        let closing_balance = opening_balance
+            .map(|opening| totals.apply(opening))
+            .transpose()?;
         let excludes_open_time = closing_balance.is_some()
             && observations
                 .uncertain_since
