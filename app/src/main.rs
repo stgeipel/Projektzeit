@@ -2,10 +2,17 @@ use std::{env, path::PathBuf, process::ExitCode};
 
 use projektzeit_storage::OpenError;
 
+#[cfg(feature = "desktop-account")]
+mod account_ui;
+
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
-    if let (Some(flag), Some(path), None) = (args.next(), args.next(), args.next())
-        && flag == "--check-db"
+    let flag = args.next();
+    let path = args.next();
+    let extra = args.next();
+    if flag.as_deref().is_some_and(|flag| flag == "--check-db")
+        && extra.is_none()
+        && let Some(ref path) = path
     {
         return match projektzeit_storage::open(PathBuf::from(path)) {
             Ok(_) => {
@@ -30,6 +37,21 @@ fn main() -> ExitCode {
         };
     }
 
+    #[cfg(feature = "desktop-account")]
+    if flag.as_deref().is_some_and(|flag| flag == "--account-ui")
+        && args.next().is_none()
+        && let Some(path) = path
+    {
+        return match account_ui::run(PathBuf::from(path), extra.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     eprintln!("Aufruf: projektzeit --check-db <Datenbankpfad>");
+    #[cfg(feature = "desktop-account")]
+    eprintln!("       projektzeit --account-ui <Datenbankpfad> [Zeitzone]");
     ExitCode::from(2)
 }

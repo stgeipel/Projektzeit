@@ -4,8 +4,26 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+desktop-account = [
+    "dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:projektzeit-core",
+    "dep:rusqlite", "dep:rust_xlsxwriter", "dep:serde_json", "dep:slint",
+]
+
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+chrono-tz = { version = "0.10", optional = true }
+iana-time-zone = { version = "0.1", optional = true }
+projektzeit-core = { path = "../crates/core", optional = true }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+rust_xlsxwriter = { version = "0.104", optional = true }
+serde_json = { version = "1", optional = true }
+slint = { version = "~1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"], optional = true }
 projektzeit-storage = { path = "../crates/storage" }
 
-[lints]
-workspace = true
+[dev-dependencies]
+tempfile = "3"
+zip = { version = "9", default-features = false }
+
+[lints.rust]
+unsafe_code = "deny"

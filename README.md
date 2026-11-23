@@ -1,6 +1,6 @@
 # Projektzeit
 
-Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. This first iteration provides the Rust domain model, SQLite schema and migrations, and a command to initialize a database. The desktop UI, tracking commands, and exports are planned for later increments.
+Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. The workspace includes the Rust time-tracking foundation and a standalone German Slint desktop window for the worktime account. Continuous tracking commands, the main tracker, the mini-timer, and project exports are planned separately.
 
 ## Build and run
 
@@ -15,6 +15,18 @@ cargo run --locked -p projektzeit -- --check-db ./projektzeit-dev.sqlite
 
 The command opens or creates the specified database, runs pending migrations, and prints `SQLite-Datenbank ist bereit.` on success. Choose a path on a local disk in an existing directory. Use a disposable development file when testing migrations. Once Cargo has cached dependencies, add `--offline` to build or run without network access.
 
+## Worktime account
+
+On Windows, start the optional desktop window with:
+
+```sh
+cargo run --locked -p projektzeit --features desktop-account -- --account-ui ./projektzeit-dev.sqlite Europe/Berlin
+```
+
+The timezone argument is optional when the system IANA zone can be detected. On Linux, the desktop feature additionally needs a graphical session and Fontconfig development files (for example, `libfontconfig-dev` on Ubuntu).
+
+Open **Einstellungen**, enter a weekly schedule (the seven daily durations must add up to the weekly total), and set the opening balance and its effective date. Review each preview before saving. Use **Woche** or **Monat** to select a cutoff date or save an account-only XLSX to a new file. [Worktime-account rules and examples](docs/worktime-account.md)
+
 ## Checks
 
 ```sh
@@ -23,6 +35,6 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 ```
 
-The CI workflow runs these checks on Windows and Linux. See the [implementation plan and architecture decisions](docs/architecture.md) and the [workbook compatibility findings](docs/workbook-compatibility.md).
+The CI workflow runs the checks with `--all-features` on Windows and Linux. Add that flag to Clippy and tests to include the optional desktop and workbook tests. See the [implementation plan and architecture decisions](docs/architecture.md) and the [workbook compatibility findings](docs/workbook-compatibility.md).
 
 The supplied workbook is a local reference in the starter archive. Keep it beside `PROJECT_SPEC.md` for inspection. It contains source metadata and is excluded from version control.

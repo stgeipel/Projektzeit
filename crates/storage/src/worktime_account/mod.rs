@@ -181,6 +181,7 @@ pub struct Reports {
     pub period: PeriodReport,
     pub balance_as_of: Option<Seconds>,
     pub balance_provisional: bool,
+    pub balance_excludes_open_time: bool,
 }
 
 pub fn settings(db: &mut Connection) -> Result<Settings, StoreError> {
@@ -231,16 +232,18 @@ pub fn report(
     } else {
         account.balance_as_of(as_of, &observations)?
     };
-    let balance_provisional = balance_as_of.is_some()
-        && (as_of == today
-            || observations
-                .uncertain_since
-                .is_some_and(|date| date <= as_of));
+    let balance_excludes_open_time = balance_as_of.is_some()
+        && observations
+            .uncertain_since
+            .is_some_and(|date| date <= as_of);
+    let balance_provisional =
+        balance_as_of.is_some() && (as_of == today || balance_excludes_open_time);
     transaction.commit()?;
     Ok(Reports {
         period,
         balance_as_of,
         balance_provisional,
+        balance_excludes_open_time,
     })
 }
 
