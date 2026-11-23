@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+projektzeit-core = { path = "../core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]

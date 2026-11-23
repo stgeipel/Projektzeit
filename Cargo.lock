@@ -199,6 +199,9 @@ dependencies = [
 name = "projektzeit-storage"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "chrono-tz",
+ "projektzeit-core",
  "rusqlite",
  "tempfile",
 ]

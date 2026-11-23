@@ -50,7 +50,7 @@ fn migration_is_repeatable_and_preserves_committed_recovery_state() {
     let path = directory.path().join("tracker.sqlite");
 
     let db = open(&path).unwrap();
-    assert_eq!(pragma::<i32>(&db, "user_version"), 1);
+    assert_eq!(pragma::<i32>(&db, "user_version"), 2);
     assert_eq!(pragma::<String>(&db, "journal_mode"), "wal");
     assert_eq!(pragma::<i32>(&db, "foreign_keys"), 1);
     assert_eq!(pragma::<i32>(&db, "synchronous"), 2);
@@ -143,9 +143,9 @@ fn refuses_foreign_and_newer_databases() {
 
     let newer = directory.path().join("newer.sqlite");
     let db = open(&newer).unwrap();
-    db.pragma_update(None, "user_version", 2).unwrap();
+    db.pragma_update(None, "user_version", 3).unwrap();
     drop(db);
-    assert!(matches!(open(&newer), Err(OpenError::UnsupportedSchema(2))));
+    assert!(matches!(open(&newer), Err(OpenError::UnsupportedSchema(3))));
 }
 
 #[test]
