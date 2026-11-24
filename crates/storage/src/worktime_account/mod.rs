@@ -120,6 +120,7 @@ pub struct Preview {
     change: Change,
     revision: i64,
     as_of: NaiveDate,
+    today: NaiveDate,
     observed_at: Timestamp,
     effective_date: NaiveDate,
     before: Impact,
@@ -317,8 +318,22 @@ pub fn preview(
     as_of: NaiveDate,
     observed_at: Timestamp,
 ) -> Result<Preview, StoreError> {
+    preview_on(db, change, as_of, observed_at.date_naive(), observed_at)
+}
+
+/// Preview a change with an explicit calendar date in the user's timezone.
+pub fn preview_on(
+    db: &mut Connection,
+    change: Change,
+    as_of: NaiveDate,
+    today: NaiveDate,
+    observed_at: Timestamp,
+) -> Result<Preview, StoreError> {
+    if as_of > today {
+        return Err(StoreError::InvalidReportDates);
+    }
     let transaction = db.transaction()?;
-    let preview = changes::preview(&transaction, change, as_of, observed_at)?;
+    let preview = changes::preview(&transaction, change, as_of, today, observed_at)?;
     transaction.commit()?;
     Ok(preview)
 }
@@ -338,6 +353,7 @@ pub fn apply(
         &transaction,
         presented.change,
         presented.as_of,
+        presented.today,
         presented.observed_at,
     )?;
     if fresh.before != presented.before || fresh.after != presented.after {

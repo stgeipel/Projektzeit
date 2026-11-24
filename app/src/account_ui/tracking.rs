@@ -45,6 +45,15 @@ impl Tracking {
         })
     }
 
+    fn expire_trust(&mut self, at: Timestamp) -> bool {
+        let gap = at - self.last_pulse;
+        if self.trusted.is_some() && !(TimeDelta::zero()..=TimeDelta::minutes(2)).contains(&gap) {
+            self.trusted = None;
+            return true;
+        }
+        false
+    }
+
     pub fn trusted(&self) -> Option<i64> {
         self.trusted
     }
@@ -300,6 +309,10 @@ pub(super) fn connect_mini(mini: &MiniTimer, main: &AccountWindow) {
 impl Controller {
     fn tracking_action(&mut self, window: &AccountWindow, event: i32) -> Result<(), String> {
         let at = now();
+        if self.tracking.expire_trust(at) {
+            self.render(window)?;
+            return Err("Bitte die Zeit seit dem letzten Speicherpunkt prüfen.".into());
+        }
         if event == 8 || event == 9 {
             self.tracking.pending_activity = if event == 8 {
                 None
@@ -387,13 +400,11 @@ impl Controller {
     ) -> Result<(), String> {
         let today = local_date(at, self.zone);
         let session = tracker::active(&self.connection).map_err(tracking_error)?;
+        self.tracking.expire_trust(at);
         if self.tracking.trusted.is_some() {
-            let gap = at - self.tracking.last_pulse;
             if session
                 .as_ref()
                 .is_none_or(|session| Some(session.entry_id) != self.tracking.trusted)
-                || gap < TimeDelta::zero()
-                || gap > TimeDelta::minutes(2)
             {
                 self.tracking.trusted = None;
             } else if let Some(session) = session

@@ -1011,7 +1011,7 @@ impl Controller {
                 reason.trim()
             ),
         };
-        let preview = account::preview(&mut self.connection, change, today, observed_at)
+        let preview = account::preview_on(&mut self.connection, change, today, today, observed_at)
             .map_err(store_error)?;
         window.set_preview_text(format!("{description}\nGültig ab / am {}\n\nAbgeschlossener Gesamtsaldo am {}\nVorher: {}\nNachher: {}\n\nTagessoll am Gültigkeitsdatum: {} → {}",
             display_date(preview.effective_date()), display_date(preview.as_of()),

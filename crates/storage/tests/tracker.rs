@@ -35,7 +35,7 @@ fn account_setup(db: &mut Connection, opening: i64) {
             signed_seconds: opening,
         }),
     ] {
-        let preview = account::preview(db, change, today, monday("00:00")).unwrap();
+        let preview = account::preview_on(db, change, today, today, monday("00:00")).unwrap();
         account::apply(db, preview, monday("00:00")).unwrap();
     }
 }
