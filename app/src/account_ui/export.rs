@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write, path::Path};
+use std::{io::Write, path::Path};
 
 use chrono::{NaiveDate, Timelike};
 use projektzeit_core::worktime_account::{Period, Seconds};
@@ -31,23 +31,10 @@ fn xlsx_error(error: XlsxError) -> String {
 }
 
 fn write_new(path: &Path, data: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "Die Datei existiert bereits. Bitte einen neuen Dateinamen wählen.".into()
-            } else {
-                format!("Datei konnte nicht erstellt werden ({error}).")
-            }
-        })?;
-    if let Err(error) = file.write_all(data).and_then(|()| file.sync_all()) {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(format!("XLSX konnte nicht gespeichert werden ({error})."));
-    }
-    Ok(())
+    super::data::publish_file(path, |file| {
+        file.write_all(data)
+            .map_err(|error| format!("XLSX konnte nicht gespeichert werden ({error})."))
+    })
 }
 
 pub(super) fn save_times(

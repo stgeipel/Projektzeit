@@ -22,7 +22,7 @@ pub fn save_entry(
     let start = input.start.timestamp_millis();
     let end = input.end.timestamp_millis();
     let now = at.timestamp_millis();
-    if start >= end || end > now {
+    if start > end || end > now {
         return Err(Error::InvalidRange);
     }
     let (project, activity) = match input.kind {
@@ -36,6 +36,18 @@ pub fn save_entry(
         Kind::Break => (None, None),
     };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if start == end {
+        // A live transition can legitimately commit a zero-length booking
+        // at millisecond precision. It remains editable, including its activity.
+        let existing_zero: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM timeline_entries WHERE id=?1 AND started_at_utc_ms = ended_at_utc_ms)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !existing_zero {
+            return Err(Error::InvalidRange);
+        }
+    }
     check_project(&tx, project, false)?;
     let date = input
         .start

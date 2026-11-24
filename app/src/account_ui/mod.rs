@@ -82,6 +82,7 @@ const THEMES: [&str; 3] = ["system", "light", "dark"];
 struct Controller {
     connection: Connection,
     database_path: PathBuf,
+    _database_lock: std::fs::File,
     tracking: tracking::Tracking,
     zone: Tz,
     page: Page,
@@ -115,6 +116,7 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
     })?;
     let connection = projektzeit_storage::open(&path)
         .map_err(|error| format!("Datenbank konnte nicht geöffnet werden ({error})."))?;
+    let database_lock = data::lock_database(&path)?;
     window::initialize()
         .map_err(|error| format!("Fenstersystem konnte nicht gestartet werden ({error})."))?;
     let window = AccountWindow::new()
@@ -137,6 +139,7 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
     let controller = Rc::new(RefCell::new(Controller {
         connection,
         database_path: path,
+        _database_lock: database_lock,
         tracking,
         zone,
         page: Page::Today,

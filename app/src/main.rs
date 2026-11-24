@@ -22,6 +22,10 @@ fn main() -> ExitCode {
             Err(error) => {
                 match error {
                     OpenError::Sqlite(error) => eprintln!("SQLite-Fehler: {error}"),
+                    OpenError::File(error) => eprintln!("Dateifehler: {error}"),
+                    OpenError::InvalidPath => {
+                        eprintln!("Bitte einen lokalen Datenbankpfad angeben.")
+                    }
                     OpenError::ForeignDatabase => {
                         eprintln!("Die Datei ist keine Projektzeit-Datenbank.");
                     }

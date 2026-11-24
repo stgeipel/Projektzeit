@@ -7,7 +7,7 @@ rust-version.workspace = true
 [features]
 desktop-account = [
     "dep:chrono", "dep:chrono-tz", "dep:roxmltree", "dep:zip", "dep:iana-time-zone", "dep:projektzeit-core",
-    "dep:rusqlite", "dep:rust_xlsxwriter", "dep:serde_json", "dep:slint", "dep:windows-sys", "dep:raw-window-handle",
+    "dep:rusqlite", "dep:rust_xlsxwriter", "dep:serde_json", "dep:tempfile", "dep:slint", "dep:windows-sys", "dep:raw-window-handle",
 ]
 
 [dependencies]
@@ -17,9 +17,10 @@ iana-time-zone = { version = "0.1", optional = true }
 projektzeit-core = { path = "../crates/core", optional = true }
 roxmltree = { version = "0.21", optional = true }
 zip = { version = "9", default-features = false, optional = true }
-rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"], optional = true }
 rust_xlsxwriter = { version = "0.104", optional = true }
 serde_json = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
 slint = { version = "~1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "unstable-winit-030", "raw-window-handle-06"], optional = true }
 projektzeit-storage = { path = "../crates/storage" }
 
@@ -29,9 +30,6 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging", "Win32_System_Registry",
 ] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints.rust]
 unsafe_code = "deny"

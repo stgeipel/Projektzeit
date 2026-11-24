@@ -50,7 +50,7 @@ fn migration_is_repeatable_and_preserves_committed_recovery_state() {
     let path = directory.path().join("tracker.sqlite");
 
     let db = open(&path).unwrap();
-    assert_eq!(pragma::<i32>(&db, "user_version"), 3);
+    assert_eq!(pragma::<i32>(&db, "user_version"), 4);
     assert_eq!(pragma::<String>(&db, "journal_mode"), "wal");
     assert_eq!(pragma::<i32>(&db, "foreign_keys"), 1);
     assert_eq!(pragma::<i32>(&db, "synchronous"), 2);
@@ -143,15 +143,28 @@ fn refuses_foreign_and_newer_databases() {
 
     let newer = directory.path().join("newer.sqlite");
     let db = open(&newer).unwrap();
-    db.pragma_update(None, "user_version", 4).unwrap();
+    db.pragma_update(None, "user_version", 5).unwrap();
     drop(db);
-    assert!(matches!(open(&newer), Err(OpenError::UnsupportedSchema(4))));
+    assert!(matches!(open(&newer), Err(OpenError::UnsupportedSchema(5))));
 }
 
 #[test]
 fn requires_a_file_backed_database() {
     assert!(matches!(
         open(Path::new(":memory:")),
-        Err(OpenError::WalUnavailable(_))
+        Err(OpenError::InvalidPath)
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn newly_created_databases_are_private_on_unix() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("private.sqlite");
+    let _db = open(&path).unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+        0
+    );
 }

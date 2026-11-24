@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fs, path::Path, rc::Rc};
+use std::{cell::RefCell, fs, io, path::Path, rc::Rc};
 
 use chrono_tz::Tz;
 use rusqlite::Connection;
@@ -33,36 +33,71 @@ pub(super) fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller
     ));
 }
 
+pub(super) fn lock_database(path: &Path) -> Result<fs::File, String> {
+    let result = (|| -> io::Result<_> {
+        let path = fs::canonicalize(path)?;
+        let mut lock_name = path.into_os_string();
+        lock_name.push(".projektzeit.lock");
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_name)
+    })();
+    let file = result
+        .map_err(|error| format!("Datenbanksperre konnte nicht geöffnet werden ({error})."))?;
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => {
+            "Diese Datenbank ist bereits in einem Projektzeit-Fenster geöffnet.".into()
+        }
+        std::fs::TryLockError::Error(error) => {
+            format!("Datenbank konnte nicht gesperrt werden ({error}).")
+        }
+    })?;
+    // Retain the sidecar itself. Deleting it could let another process lock a
+    // different file while a prospective opener still holds this handle.
+    Ok(file)
+}
+
 fn backup(db: &Connection, path: &Path) -> Result<(), String> {
+    publish_file(path, |temporary| {
+        let destination = temporary
+            .path()
+            .to_str()
+            .ok_or_else(|| "Ungültiger Pfad für die Datensicherung.".to_owned())?;
+        db.execute("VACUUM INTO ?1", [destination])
+            .map_err(|error| format!("Datensicherung fehlgeschlagen ({error})."))?;
+        Ok(())
+    })
+}
+
+/// Write and flush a private file beside the destination before publishing it.
+pub(super) fn publish_file(
+    path: &Path,
+    write: impl FnOnce(&mut tempfile::NamedTempFile) -> Result<(), String>,
+) -> Result<(), String> {
     if path.as_os_str().is_empty() {
-        return Err("Bitte einen Zielpfad für die Datensicherung eingeben.".into());
+        return Err("Bitte einen Zielpfad eingeben.".into());
     }
-    // An absolute filesystem path also rules out SQLite special names such as :memory:.
     let path =
         std::path::absolute(path).map_err(|error| format!("Ungültiger Zielpfad ({error})."))?;
-    let destination = path
-        .to_str()
+    let parent = path
+        .parent()
         .ok_or_else(|| "Ungültiger Zielpfad.".to_owned())?;
-    // Reserve the destination atomically so SQLite cannot replace an existing file.
-    fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-        .map_err(|error| format!("Sicherungsdatei konnte nicht erstellt werden ({error})."))?;
-    if let Err(error) = db.execute("VACUUM INTO ?1", [destination]) {
-        let _ = fs::remove_file(&path);
-        return Err(format!("Datensicherung fehlgeschlagen ({error})."));
-    }
-    if let Err(error) = fs::OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .and_then(|file| file.sync_all())
-    {
-        let _ = fs::remove_file(&path);
-        return Err(format!(
-            "Datensicherung konnte nicht gespeichert werden ({error})."
-        ));
-    }
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Temporäre Datei konnte nicht erstellt werden ({error})."))?;
+    write(&mut file)?;
+    file.as_file()
+        .sync_all()
+        .map_err(|error| format!("Datei konnte nicht gespeichert werden ({error})."))?;
+    file.persist_noclobber(path).map_err(|failure| {
+        if failure.error.kind() == io::ErrorKind::AlreadyExists {
+            "Die Datei existiert bereits. Bitte einen neuen Dateinamen wählen.".into()
+        } else {
+            format!("Datei konnte nicht gespeichert werden ({}).", failure.error)
+        }
+    })?;
     Ok(())
 }
 
@@ -80,7 +115,7 @@ mod native {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod native {
-    use std::{io, os::windows::ffi::OsStrExt, ptr};
+    use std::{os::windows::ffi::OsStrExt, ptr};
 
     use windows_sys::Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
@@ -192,5 +227,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value, "before");
+    }
+
+    #[test]
+    fn interrupted_write_keeps_failed_file_out_of_the_destination() {
+        use std::io::Write;
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("backup.sqlite");
+        let attempt = publish_file(&path, |temp| {
+            temp.write_all(b"incomplete").unwrap();
+            Err("interrupted".into())
+        });
+        assert!(attempt.is_err());
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn opening_same_database_twice_cannot_create_conflicting_desktop_sessions() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("data.sqlite");
+        let _db = projektzeit_storage::open(&path).unwrap();
+        let lock = lock_database(&path).unwrap();
+        assert!(lock_database(&folder.path().join(".").join("data.sqlite")).is_err());
+        drop(lock);
+        assert!(lock_database(&path).is_ok());
     }
 }

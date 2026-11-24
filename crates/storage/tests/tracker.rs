@@ -384,3 +384,111 @@ fn unfinished_overnight_manual_entry_can_be_completed_on_its_end_date() {
     assert_eq!(report.period.days[1].observed.unwrap().actual, 19_800);
     assert!(tracker::day_finished(&db, today).unwrap());
 }
+
+#[test]
+fn interruption_during_a_transition_keeps_committed_wal_and_rolls_back_partial_change() {
+    const CHILD_PATH: &str = "PROJEKTZEIT_TEST_RECOVERY_PATH";
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        let mut db = open(path).unwrap();
+        let started = tracker::start(&mut db, Berlin, None, monday("08:00")).unwrap();
+        tracker::checkpoint(&db, started.entry_id, monday("08:30")).unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute(
+            "UPDATE timeline_entries SET ended_at_utc_ms=?1 WHERE id=?2",
+            (monday("09:00").timestamp_millis(), started.entry_id),
+        )
+        .unwrap();
+        // Bypass Rust destructors and skip every explicit close/rollback.
+        std::process::exit(0);
+    }
+
+    let folder = tempdir().unwrap();
+    let path = folder.path().join("wal-recovery.sqlite");
+    let process = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "interruption_during_a_transition_keeps_committed_wal_and_rolls_back_partial_change",
+        ])
+        .env(CHILD_PATH, &path)
+        .output()
+        .unwrap();
+    assert!(
+        process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&process.stderr)
+    );
+    let mut db = open(&path).unwrap();
+    let active = tracker::active(&db).unwrap().unwrap();
+    assert_eq!(active.started, monday("08:00"));
+    assert_eq!(active.checkpoint, monday("08:30"));
+    assert_eq!(tracker::entry(&db, active.entry_id).unwrap().end, None);
+
+    tracker::recover(
+        &mut db,
+        active.entry_id,
+        Recovery::FinishAtCheckpoint,
+        monday("09:05"),
+    )
+    .unwrap();
+    assert_eq!(
+        tracker::entry(&db, active.entry_id).unwrap().end,
+        Some(monday("08:30"))
+    );
+    assert_eq!(tracker::pending_descriptions(&db).unwrap().len(), 1);
+}
+
+#[test]
+fn changing_an_existing_zero_length_booking_can_complete_its_description() {
+    let folder = tempdir().unwrap();
+    let mut db = open(folder.path().join("zero.sqlite")).unwrap();
+    let now = monday("08:00");
+    let active = tracker::start(&mut db, Berlin, None, now).unwrap();
+    tracker::transition(&mut db, active.entry_id, Command::Finish, now).unwrap();
+    let input = || EntryInput {
+        kind: Kind::Work,
+        project: None,
+        zone: Berlin,
+        start: now,
+        end: now,
+        activity: "Versehentlicher Start",
+    };
+    assert!(matches!(
+        tracker::save_entry(&mut db, None, input(), now),
+        Err(Error::InvalidRange)
+    ));
+    tracker::save_entry(&mut db, Some(active.entry_id), input(), now).unwrap();
+    assert!(tracker::pending_descriptions(&db).unwrap().is_empty());
+}
+
+#[test]
+fn v3_migration_unblocks_an_orphaned_open_day_without_inventing_bookings() {
+    let folder = tempdir().unwrap();
+    let path = folder.path().join("older.sqlite");
+    let mut db = open(&path).unwrap();
+    let existing = hours(&mut db, "08:00", "09:00", None, Kind::Work);
+    let workday = tracker::entry(&db, existing).unwrap().workday_id;
+    db.execute(
+        "UPDATE workdays SET ended_at_utc_ms=NULL WHERE id=?1",
+        [workday],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 3).unwrap();
+    assert!(matches!(
+        tracker::start(&mut db, Berlin, None, monday("10:00")),
+        Err(Error::InvalidTransition)
+    ));
+    drop(db);
+
+    let mut db = open(&path).unwrap();
+    assert_eq!(
+        tracker::day_bounds(&db, workday).unwrap().2,
+        monday("09:00")
+    );
+    assert_eq!(tracker::entry(&db, existing).unwrap().activity, "Buchung");
+    assert_eq!(
+        tracker::start(&mut db, Berlin, None, monday("10:00"))
+            .unwrap()
+            .workday_id,
+        workday
+    );
+}

@@ -248,3 +248,58 @@ fn local_date_attribution_handles_a_skipped_date_and_a_rollback_across_midnight(
         .into()
     );
 }
+
+#[test]
+fn settled_overtime_and_signed_adjustments_carry_through_a_year_boundary() {
+    let mut account = account("2026-12-31", 12 * 3600 + 30 * 60, [0, 0, 0, 8, 0, 0, 0]);
+    let december = date("2026-12-31");
+    let january = date("2027-01-01");
+    account.adjustments.extend([
+        Adjustment {
+            effective_date: december,
+            signed_seconds: 2 * 3600,
+        },
+        Adjustment {
+            effective_date: january,
+            signed_seconds: -3600,
+        },
+    ]);
+    let observed = Observations {
+        actual: [(december, 16 * 3600), (january, 2 * 3600)].into(),
+        ..Default::default()
+    };
+    let prior = account
+        .report(
+            Period::month(december).unwrap(),
+            december,
+            january,
+            &observed,
+        )
+        .unwrap();
+    let current = account
+        .report(Period::month(january).unwrap(), january, january, &observed)
+        .unwrap();
+    assert_eq!(prior.closing_balance, Some(22 * 3600 + 30 * 60));
+    assert_eq!(current.opening_balance, prior.closing_balance);
+    assert_eq!(current.totals.actual, 2 * 3600);
+    assert_eq!(current.finalized_totals.actual, 0);
+    assert_eq!(current.closing_balance, Some(21 * 3600 + 30 * 60));
+}
+
+#[test]
+fn elapsed_parts_are_summed_before_truncating_fractional_seconds() {
+    let start = timestamp("2026-10-25T02:30:00.000+02:00");
+    let split = timestamp("2026-10-25T02:30:00.650+02:00");
+    let finish = timestamp("2026-10-25T02:30:01.250+02:00");
+    let work = |start, end| {
+        TimelineEntry::Work(WorkSegment::new(
+            TimeSpan::new(start, Some(end)).unwrap(),
+            None,
+            None,
+        ))
+    };
+    let first = work(start, split);
+    let second = work(split, finish);
+    let actual = attribute_work([(Berlin, &first), (Berlin, &second)], finish).unwrap();
+    assert_eq!(actual[&date("2026-10-25")], 1);
+}
