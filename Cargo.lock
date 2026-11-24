@@ -3407,6 +3407,7 @@ dependencies = [
  "projektzeit-core",
  "projektzeit-storage",
  "raw-window-handle",
+ "roxmltree",
  "rusqlite",
  "rust_xlsxwriter",
  "serde_json",

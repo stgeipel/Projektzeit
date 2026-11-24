@@ -19,3 +19,5 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
       - run: cargo test --locked --workspace --all-features
+      - if: runner.os == 'Windows'
+        run: cargo build --locked -p projektzeit --features desktop-account

@@ -1,13 +1,20 @@
 use std::{fs::OpenOptions, io::Write, path::Path};
 
-use chrono::NaiveDate;
-use projektzeit_core::worktime_account::Seconds;
-use projektzeit_storage::worktime_account::Reports;
+use chrono::{NaiveDate, Timelike};
+use projektzeit_core::worktime_account::{Period, Seconds};
+use projektzeit_storage::{tracker::Kind, worktime_account::Reports};
 use rust_xlsxwriter::{Format, Workbook, XlsxError};
 
-use super::input::display_date;
+use super::{dashboard::Slice, input::display_date};
 
 pub(super) fn save_account(path: &Path, reports: &Reports, as_of: NaiveDate) -> Result<(), String> {
+    check_path(path)?;
+    let mut workbook = workbook(reports, as_of).map_err(xlsx_error)?;
+    let data = workbook.save_to_buffer().map_err(xlsx_error)?;
+    write_new(path, &data)
+}
+
+fn check_path(path: &Path) -> Result<(), String> {
     if !path
         .extension()
         .and_then(|value| value.to_str())
@@ -16,11 +23,14 @@ pub(super) fn save_account(path: &Path, reports: &Reports, as_of: NaiveDate) -> 
         return Err("Bitte einen Dateipfad mit der Endung .xlsx eingeben.".into());
     }
 
-    let mut workbook = workbook(reports, as_of)
-        .map_err(|error| format!("XLSX konnte nicht erstellt werden ({error})."))?;
-    let data = workbook
-        .save_to_buffer()
-        .map_err(|error| format!("XLSX konnte nicht erstellt werden ({error})."))?;
+    Ok(())
+}
+
+fn xlsx_error(error: XlsxError) -> String {
+    format!("XLSX konnte nicht erstellt werden ({error}).")
+}
+
+fn write_new(path: &Path, data: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -32,12 +42,118 @@ pub(super) fn save_account(path: &Path, reports: &Reports, as_of: NaiveDate) -> 
                 format!("Datei konnte nicht erstellt werden ({error}).")
             }
         })?;
-    if let Err(error) = file.write_all(&data).and_then(|()| file.sync_all()) {
+    if let Err(error) = file.write_all(data).and_then(|()| file.sync_all()) {
         drop(file);
         let _ = std::fs::remove_file(path);
         return Err(format!("XLSX konnte nicht gespeichert werden ({error})."));
     }
     Ok(())
+}
+
+pub(super) fn save_times(
+    path: &Path,
+    template: &str,
+    period: Period,
+    rows: &[Slice],
+) -> Result<(), String> {
+    check_path(path)?;
+    let data = if template.is_empty() {
+        time_workbook(rows).map_err(xlsx_error)?
+    } else {
+        super::template::copy(Path::new(template), period, rows)?
+    };
+    write_new(path, &data)
+}
+
+fn time_workbook(rows: &[Slice]) -> Result<Vec<u8>, XlsxError> {
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Zeiten")?;
+    sheet.set_freeze_panes(1, 0)?;
+    let header = Format::new().set_bold().set_background_color(0xDDF5EB);
+    let date = Format::new().set_num_format("dd.mm.yyyy");
+    let clock = Format::new().set_num_format("dd.mm.yyyy hh:mm:ss");
+    let elapsed = Format::new().set_num_format("[h]:mm:ss");
+    for (column, (label, width)) in [
+        ("Datum", 14),
+        ("Art", 12),
+        ("Projekt", 24),
+        ("Tätigkeit", 42),
+        ("Beginn (lokal)", 24),
+        ("Ende (lokal)", 24),
+        ("Arbeit netto", 16),
+        ("Pause", 13),
+        ("Zeitzone", 22),
+        ("Status", 27),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sheet.set_column_width(column as u16, width)?;
+        sheet.write_string_with_format(0, column as u16, label, &header)?;
+    }
+    for (index, slice) in rows.iter().enumerate() {
+        let row = (index + 1) as u32;
+        let work = slice.entry.kind == Kind::Work;
+        let start = slice.start.with_timezone(&slice.entry.zone);
+        let end = slice.end.with_timezone(&slice.entry.zone);
+        sheet.write_number_with_format(row, 0, excel_date(slice.date), &date)?;
+        sheet.write_string(row, 1, if work { "Arbeit" } else { "Pause" })?;
+        if work {
+            sheet.write_string(
+                row,
+                2,
+                slice
+                    .entry
+                    .project_name
+                    .as_deref()
+                    .unwrap_or("Ohne Projekt"),
+            )?;
+            sheet.write_string(row, 3, &slice.entry.activity)?;
+        }
+        sheet.write_number_with_format(
+            row,
+            4,
+            excel_date(start.date_naive()) + excel_time(start.time()),
+            &clock,
+        )?;
+        if slice.counted {
+            sheet.write_number_with_format(
+                row,
+                5,
+                excel_date(end.date_naive()) + excel_time(end.time()),
+                &clock,
+            )?;
+            sheet.write_number_with_format(
+                row,
+                if work { 6 } else { 7 },
+                (slice.end - slice.start).num_milliseconds() as f64 / 86_400_000.0,
+                &elapsed,
+            )?;
+        }
+        sheet.write_string(row, 8, slice.entry.zone.name())?;
+        let status = if !slice.counted {
+            "Unbestätigt"
+        } else if slice.entry.end.is_none() {
+            "Laufend · Momentaufnahme"
+        } else if work && slice.entry.activity.is_empty() {
+            "Beschreibung fehlt"
+        } else {
+            "Abgeschlossen"
+        };
+        sheet.write_string(row, 9, status)?;
+    }
+    workbook.save_to_buffer()
+}
+
+pub(super) fn excel_date(date: NaiveDate) -> f64 {
+    let origin = NaiveDate::from_ymd_opt(1899, 12, 31).unwrap();
+    let leap_bug = NaiveDate::from_ymd_opt(1900, 3, 1).unwrap();
+    ((date - origin).num_days() + i64::from(date >= leap_bug)) as f64
+}
+
+pub(super) fn excel_time(time: chrono::NaiveTime) -> f64 {
+    (f64::from(time.num_seconds_from_midnight()) + f64::from(time.nanosecond()) / 1e9) / 86_400.0
 }
 
 fn workbook(reports: &Reports, as_of: NaiveDate) -> Result<Workbook, XlsxError> {

@@ -1,6 +1,6 @@
 # Worktime account
 
-The standalone Slint window uses the same SQLite file and work timeline as the tracker foundation. It shows today's daily timeline and balance, daily, ISO-week, and calendar-month summaries under Zeiterfassung, and the monthly balance under Arbeitszeitkonto. Berichte & Export can save the account report to XLSX. Projects lists the active and archived projects stored in the database. The pinnable mini-timer refreshes the read-only figures while it is visible. This window configures and reports existing time records. Recording live sessions and confirming recovery intervals belong to the tracker.
+**Arbeitszeitkonto** calculates weekly, monthly, and accumulated balances from the same SQLite records that **Heute** and **Zeiten** use. Adjusting an individual time booking changes actual work. An adjustment in the worktime account changes the accumulated balance on its effective date.
 
 ## Configuration and correction
 
@@ -13,14 +13,16 @@ Configuration changes and audit writes share one SQLite transaction. The preview
 
 ## Reports
 
-Actual time sums the elapsed UTC time of closed work segments, including unassigned work. Breaks and project subtotals are excluded. Intervals are allocated to calendar dates in their workday's recorded timezone, splitting at local date changes, including DST. Milliseconds are summed for each date before discarding the fractional second. Open segments are treated as unclassified until the tracker supplies a trusted cutoff. If they can affect a displayed balance, the report marks it provisional.
+Actual time is elapsed work, including work without a project. Breaks are separate intervals on the same timeline. Intervals are attributed to calendar dates in the recorded timezone, including local midnight and DST transitions. Elapsed milliseconds are summed for each date before discarding the fractional second.
 
-The target sums the daily allocation in force on each date, with overrides applied. Dates after the report cutoff count toward the planned target. The current date's scheduled target is included in the provisional total through today. The weekly view follows ISO Monday–Sunday boundaries. The monthly opening is the previous month's closing, or the configured opening when the account starts during that month.
+The due target and settled balance include past dates and explicitly completed workdays. The current unfinished day contributes to observed actual and daily progress. Its unfinished balance stays outside the settled total. A currently open workday stays unsettled across midnight. On restart the user classifies time since the last persisted checkpoint. The weekly view follows ISO Monday–Sunday boundaries. A month's carryover is the settled balance before the month, or the opening amount if the account starts during that month.
+
+The full planned target includes future dates. Schedule resolution uses the plan in force on each date and applies any override. Manual balance adjustments contribute through the report cutoff, including adjustments dated today.
 
 Example: an opening of +20:00 h, 160:00 h of actual work, and a 152:00 h target result in +28:00 h at month end. A -01:15 h adjustment reduces the closing to +26:45 h. Editing that adjustment to -00:45 h changes the closing to +27:15 h.
 
 ## XLSX
 
-The time and report views export the displayed report snapshot to a new workbook with one sheet, `Arbeitszeitkonto`. Signed amounts are numeric minutes with fractional minutes for seconds, which Excel can sum regardless of its handling of negative time serials. An existing destination is preserved. The existing template file is kept separate, and the future project export can add this report as an optional sheet from the same service.
+**Arbeitszeitkonto** exports a monthly account snapshot with signed numeric minutes. **Zeiten** exports the selected work and break entries with numeric dates and durations, or creates a copy of the supplied template. Existing destination files are preserved. [Workbook mapping and export limits](workbook-compatibility.md)
 
-Schema migration 0002 adds the account tables and upgrades existing databases in place. Existing project, workday, timeline, and settings rows remain available.
+Migrations 0002 and 0003 add account configuration, project descriptions, workday checkpoints, and completion status. Previously stored projects, workdays, timeline entries, and settings remain available.

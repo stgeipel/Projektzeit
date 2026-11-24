@@ -6,7 +6,7 @@ rust-version.workspace = true
 
 [features]
 desktop-account = [
-    "dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:projektzeit-core",
+    "dep:chrono", "dep:chrono-tz", "dep:roxmltree", "dep:zip", "dep:iana-time-zone", "dep:projektzeit-core",
     "dep:rusqlite", "dep:rust_xlsxwriter", "dep:serde_json", "dep:slint", "dep:windows-sys", "dep:raw-window-handle",
 ]
 
@@ -15,6 +15,8 @@ chrono = { version = "0.4", default-features = false, features = ["std"], option
 chrono-tz = { version = "0.10", optional = true }
 iana-time-zone = { version = "0.1", optional = true }
 projektzeit-core = { path = "../crates/core", optional = true }
+roxmltree = { version = "0.21", optional = true }
+zip = { version = "9", default-features = false, optional = true }
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 rust_xlsxwriter = { version = "0.104", optional = true }
 serde_json = { version = "1", optional = true }
@@ -25,12 +27,11 @@ projektzeit-storage = { path = "../crates/storage" }
 raw-window-handle = { version = "0.6", optional = true }
 windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_WindowsAndMessaging", "Win32_System_Registry",
 ] }
 
 [dev-dependencies]
 tempfile = "3"
-zip = { version = "9", default-features = false }
 
 [lints.rust]
 unsafe_code = "deny"

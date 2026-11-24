@@ -1,6 +1,6 @@
 # Projektzeit
 
-Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. The workspace includes the Rust time-tracking foundation and a German Slint desktop window for recorded workdays, projects, and the worktime account. The Dashboard includes a read-only, pinnable mini-timer. Live tracking commands, project editing, and project exports are planned separately.
+Projektzeit is a German-language Windows desktop application for offline workday tracking. It uses Rust, Slint, and SQLite. The [product specification](PROJECT_SPEC.md) describes the product scope.
 
 ## Build and run
 
@@ -15,7 +15,7 @@ cargo run --locked -p projektzeit -- --check-db ./projektzeit-dev.sqlite
 
 The command opens or creates the specified database, runs pending migrations, and prints `SQLite-Datenbank ist bereit.` on success. Choose a path on a local disk in an existing directory. Use a disposable development file when testing migrations. Once Cargo has cached dependencies, add `--offline` to build or run without network access.
 
-## Worktime account
+## Desktop application
 
 On Windows, start the desktop window with:
 
@@ -25,20 +25,23 @@ cargo run --locked -p projektzeit --features desktop-account -- --account-ui ./p
 
 The timezone argument is optional when the system IANA zone can be detected. On Linux, the desktop feature additionally needs a graphical session and Fontconfig development files (for example, `libfontconfig-dev` on Ubuntu).
 
-Open **Einstellungen** to configure the current working hours and the opening balance. Review the preview when setting a dated rule or opening balance. Use **Zeiterfassung** for daily, weekly, or monthly summaries, **Arbeitszeitkonto** for the monthly balance, and **Berichte & Export** to save an account-only XLSX to a new file. **Korrekturen** contains manual balance changes and their audit history. **Einstellungen** also supports system, light, and dark appearance. [Worktime-account rules and examples](docs/worktime-account.md)
+- **Heute** starts the workday, switches projects, records breaks, and ends or resumes the day. Choose a project or **Ohne Projekt**. After leaving a work segment, save its activity description or use **Später** to enter it later. The interval is saved at the moment of the transition. Open workdays can be restored after a restart.
+- **Zeiten** shows daily, weekly, and monthly history. Add or correct work and breaks, filter by project, and export XLSX. **Tagesgrenzen** adjusts a closed workday and any first or last booking that touches the corresponding boundary. Provide the local Excel template path for a compatible copy or leave it blank for a standard workbook.
+- **Arbeitszeitkonto** shows the weekly and monthly actual, due and planned totals, carryover, and accumulated balance. Define the opening balance and review manual balance adjustments here. [Calculation rules](docs/worktime-account.md)
+- **Einstellungen** contains working hours, projects, mini-timer options, appearance, Windows autostart, backups, and the Slint attribution. A valid edit under **Aktuelle Arbeitszeit** saves automatically and takes effect today. Use **Datierte Arbeitszeitregeln** to schedule a future plan or correct a historical one.
 
-Under **Aktuelle Arbeitszeit**, a valid edit saves automatically and takes effect today. Changing the weekly total redistributes it across the existing working days. Changing a weekday updates the weekly sum. Use **Datierte Arbeitszeitregeln** with the preview for a future plan or an explicit historical correction.
+The mini-timer shares the current session with the main window. It opens on minimize by default and the automatic instance closes when you restore the main window. On Windows the initial position uses the monitor's work area with a 24-logical-pixel right and bottom margin. **Fensterposition zurücksetzen** restores that default.
 
-The mini-timer appears automatically when the main window is minimized by default. Restoring the main window closes an automatically opened timer. Its visibility preference, topmost preference, and last position are saved in the same SQLite database. On Windows the default position uses the main window's monitor work area with a 24-logical-pixel right and bottom margin. **Fensterposition zurücksetzen** restores that default.
+The backup command creates a consistent SQLite snapshot at a new path. To work with the snapshot, close the app and start it with that path as the database argument. Windows autostart opens the same database and timezone used when enabling it.
 
 ## Checks
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
+cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
+cargo test --locked --workspace --all-features
 ```
 
-The CI workflow runs the checks with `--all-features` on Windows and Linux. Add that flag to Clippy and tests to include the optional desktop and workbook tests. See the [implementation plan and architecture decisions](docs/architecture.md) and the [workbook compatibility findings](docs/workbook-compatibility.md).
+The CI workflow runs these checks on Windows and Linux and builds the Windows desktop executable. See the [implementation plan and architecture decisions](docs/architecture.md) and the [workbook compatibility findings](docs/workbook-compatibility.md).
 
 The supplied workbook is a local reference in the starter archive. Keep it beside `PROJECT_SPEC.md` for inspection. It contains source metadata and is excluded from version control.

@@ -2,9 +2,12 @@
 
 mod dashboard;
 
+mod data;
 mod export;
 mod input;
 mod preferences;
+mod template;
+mod tracking;
 mod window;
 // Slint generates the window bindings in this module.
 #[allow(unsafe_code)]
@@ -33,8 +36,8 @@ use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, Ve
 use input::{display_date, duration, parse_change, parse_date};
 use preferences::{APPEARANCE_KEY, MiniPreferences, Point, ScheduleDraft};
 use view::{
-    AccountWindow, AdjustmentRow, ChartDay, DayRow, EditFields, Metric, MiniOptions, MiniTimer,
-    Overview, ScheduleInputs,
+    AccountWindow, AdjustmentRow, DayRow, EditFields, Metric, MiniOptions, MiniTimer,
+    ScheduleInputs,
 };
 use window::{Visibility, WindowAction, WindowState};
 
@@ -43,12 +46,8 @@ use window::{Visibility, WindowAction, WindowState};
 enum Page {
     Today,
     Times,
-    Projects,
     Account,
-    Reports,
-    Corrections,
     Settings,
-    About,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -82,6 +81,8 @@ const THEMES: [&str; 3] = ["system", "light", "dark"];
 
 struct Controller {
     connection: Connection,
+    database_path: PathBuf,
+    tracking: tracking::Tracking,
     zone: Tz,
     page: Page,
     selected: NaiveDate,
@@ -111,7 +112,7 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
     .ok_or_else(|| {
         "Zeitzone unbekannt. Bitte eine IANA-Zeitzone angeben, z. B. Europe/Berlin.".to_owned()
     })?;
-    let connection = projektzeit_storage::open(path)
+    let connection = projektzeit_storage::open(&path)
         .map_err(|error| format!("Datenbank konnte nicht geöffnet werden ({error})."))?;
     window::initialize()
         .map_err(|error| format!("Fenstersystem konnte nicht gestartet werden ({error})."))?;
@@ -129,8 +130,13 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
         today,
         account::schedule_at(&connection, today).map_err(store_error)?,
     );
+    let tracking = tracking::Tracking::load(&connection, now())?;
+    window.set_database_path(path.display().to_string().into());
+    data::initialize(&window);
     let controller = Rc::new(RefCell::new(Controller {
         connection,
+        database_path: path,
+        tracking,
         zone,
         page: Page::Today,
         selected: today,
@@ -173,34 +179,16 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
         state.page = match page {
             0 => Page::Today,
             1 => Page::Times,
-            2 => Page::Projects,
-            3 => Page::Account,
-            4 => Page::Reports,
-            5 => Page::Corrections,
-            6 => Page::Settings,
-            _ => Page::About,
+            2 => Page::Account,
+            _ => Page::Settings,
         };
         state.clear_preview(window);
         state.render(window)?;
         saved
     }));
     connect_desktop(window, controller);
-    let mini_refresh = {
-        let state = Rc::downgrade(controller);
-        move || {
-            if let Some(state) = state.upgrade() {
-                let mut state = state.borrow_mut();
-                if state
-                    .mini
-                    .as_ref()
-                    .is_some_and(|mini| mini.window().is_visible())
-                {
-                    let _ = state.update_mini();
-                }
-            }
-        }
-    };
-    window.on_refresh_mini(mini_refresh);
+    tracking::connect(window, controller);
+    data::connect(window, controller);
     window.on_select_range(action(window, controller, |state, window, index| {
         state.range = match index {
             0 => Range::Day,
@@ -240,8 +228,6 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
             state.render(window)
         },
     ));
-    let refresh = action(window, controller, |state, window, ()| state.render(window));
-    window.on_refresh(move || refresh(()));
     window.on_preview_edit(action(
         window,
         controller,
@@ -262,7 +248,6 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
             );
         }
         state.render(window)?;
-        state.refresh_visible_mini()?;
 
         window.set_feedback("Änderung gespeichert.".into());
         Ok(())
@@ -273,19 +258,28 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
         Ok(())
     });
     window.on_cancel_edit(move || cancel(()));
-    window.on_export_to(action(
+    let save_export = action(
         window,
         controller,
-        |state, window, path: slint::SharedString| {
-            let (date, report) = state
-                .displayed_report
-                .as_ref()
-                .ok_or_else(|| "Kein Bericht zum Exportieren vorhanden.".to_owned())?;
-            export::save_account(&PathBuf::from(path.trim()), report, *date)?;
-            window.set_feedback("Arbeitszeitkonto exportiert.".into());
+        |state, window, (path, template): (slint::SharedString, slint::SharedString)| {
+            let path = PathBuf::from(path.trim());
+            if state.page == Page::Times {
+                let rows = state.selected_slices(now())?;
+                let period = state.range.period(state.selected).map_err(account_error)?;
+                export::save_times(&path, template.trim(), period, &rows)?;
+                window.set_feedback("Zeiten exportiert.".into());
+            } else {
+                let (date, report) = state
+                    .displayed_report
+                    .as_ref()
+                    .ok_or_else(|| "Kein Bericht zum Exportieren vorhanden.".to_owned())?;
+                export::save_account(&path, report, *date)?;
+                window.set_feedback("Arbeitszeitkonto exportiert.".into());
+            }
             Ok(())
         },
-    ));
+    );
+    window.on_export_to(move |path, template| save_export((path, template)));
 }
 
 fn connect_desktop(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
@@ -407,6 +401,7 @@ fn connect_desktop(window: &AccountWindow, controller: &Rc<RefCell<Controller>>)
                 return CloseRequestResponse::KeepWindowShown;
             }
             let _ = state.remember_mini_position();
+            state.checkpoint();
         }
         CloseRequestResponse::HideWindow
     });
@@ -422,8 +417,15 @@ fn action<A>(
     move |argument| {
         if let Some(window) = window.upgrade() {
             window.set_feedback("".into());
-            if let Err(error) = perform(&mut controller.borrow_mut(), &window, argument) {
-                window.set_feedback(error.into());
+            let mut controller = controller.borrow_mut();
+            if let Some(mini) = &controller.mini {
+                mini.set_feedback("".into());
+            }
+            if let Err(error) = perform(&mut controller, &window, argument) {
+                window.set_feedback(error.clone().into());
+                if let Some(mini) = &controller.mini {
+                    mini.set_feedback(error.into());
+                }
             }
         }
     }
@@ -463,7 +465,7 @@ impl Controller {
         }
         self.schedule.saved(today);
         self.show_schedule(window);
-        self.refresh_visible_mini()
+        Ok(())
     }
 
     fn show_mini(&mut self, main: &AccountWindow, visibility: Visibility) -> Result<(), String> {
@@ -481,12 +483,7 @@ impl Controller {
                     window::restore_main(main.window());
                 }
             });
-            let weak = main.as_weak();
-            mini.on_refresh(move || {
-                if let Some(main) = weak.upgrade() {
-                    main.invoke_refresh_mini();
-                }
-            });
+            tracking::connect_mini(&mini, main);
             let weak = main.as_weak();
             mini.on_set_pin(move |pinned| {
                 if let Some(main) = weak.upgrade() {
@@ -508,7 +505,7 @@ impl Controller {
             });
             self.mini = Some(mini);
         }
-        self.update_mini()?;
+        self.sync_tracking(main, now())?;
         let mini = self
             .mini
             .as_ref()
@@ -623,17 +620,10 @@ impl Controller {
         });
     }
 
-    fn refresh_visible_mini(&mut self) -> Result<(), String> {
-        if self.mini_state.visibility != Visibility::Hidden {
-            self.update_mini()?;
-        }
-        Ok(())
-    }
-
     fn report_range(&self) -> Range {
         match self.page {
             Page::Times => self.range,
-            Page::Account | Page::Reports => Range::Month,
+            Page::Account => Range::Month,
             _ => Range::Week,
         }
     }
@@ -647,282 +637,218 @@ impl Controller {
             Range::Week => 1,
             Range::Month => 2,
         });
+        window.set_show_entry_form(self.tracking.editor.is_some());
         self.displayed_report = None;
         window.set_has_report(false);
         window.set_notice("".into());
-        window.set_rows(model(Vec::new()));
-        window.set_segments(model(Vec::new()));
         window.set_subheading("".into());
         let observed_at = now();
         let today = local_date(observed_at, self.zone);
+        self.refresh_pending()?;
+        self.sync_tracking(window, observed_at)?;
         match self.page {
-            Page::Settings | Page::Corrections => {
-                window.set_heading(
-                    if self.page == Page::Settings {
-                        "Einstellungen"
-                    } else {
-                        "Korrekturen & Anpassungen"
-                    }
-                    .into(),
-                );
+            Page::Settings => {
+                window.set_heading("Einstellungen".into());
                 window.set_report_date(display_date(today).into());
-                if self.page == Page::Settings {
-                    if !self.schedule.dirty && self.schedule.date != today {
-                        self.schedule = ScheduleDraft::new(
-                            today,
-                            account::schedule_at(&self.connection, today).map_err(store_error)?,
-                        );
-                    }
-                    self.show_schedule(window);
-                    window.set_dated_draft(self.dated_draft.clone());
+                if !self.schedule.dirty && self.schedule.date != today {
+                    self.schedule = ScheduleDraft::new(
+                        today,
+                        account::schedule_at(&self.connection, today).map_err(store_error)?,
+                    );
                 }
+                self.show_schedule(window);
+                window.set_dated_draft(self.dated_draft.clone());
+                self.show_projects(window);
                 self.render_settings(window)
             }
-            Page::About => {
-                window.set_heading("Über Projektzeit".into());
-                Ok(())
+            Page::Today => {
+                window.set_heading(greeting(observed_at.with_timezone(&self.zone).hour()).into());
+                window.set_subheading(weekday_date(today).into());
+                self.render_today(window, today, observed_at)
             }
-            Page::Projects => {
-                window.set_heading("Projekte".into());
-                window.set_projects(model(dashboard::projects(&self.connection)?));
-                Ok(())
-            }
-            Page::Today | Page::Times | Page::Account | Page::Reports => {
-                self.render_report(window, today, observed_at)
+            Page::Times => self.render_times(window, today, observed_at),
+            Page::Account => {
+                window.set_heading("Arbeitszeitkonto".into());
+                window.set_subheading(month_year(self.selected).into());
+                window.set_report_date(display_date(self.selected).into());
+                self.render_settings(window)?;
+                self.render_account(window, today, observed_at)
             }
         }
     }
 
-    fn render_report(
+    fn report(
+        &mut self,
+        period: Period,
+        selected: NaiveDate,
+        today: NaiveDate,
+        observed_at: Timestamp,
+    ) -> Result<Reports, StoreError> {
+        account::report_live(
+            &mut self.connection,
+            period,
+            selected.min(today),
+            today,
+            observed_at,
+            self.tracking.trusted(),
+        )
+    }
+
+    fn render_today(
         &mut self,
         window: &AccountWindow,
         today: NaiveDate,
-        observed_at: Timestamp,
+        at: Timestamp,
     ) -> Result<(), String> {
-        let selected = if self.page == Page::Today {
-            today
-        } else {
-            self.selected
-        };
-        let range = self.report_range();
-        let period = range.period(selected).map_err(account_error)?;
-        let (heading, subheading) = match self.page {
-            Page::Today => (
-                greeting(observed_at.with_timezone(&self.zone).hour()),
-                weekday_date(today),
+        let week = optional_report(self.report(
+            Period::iso_week(today).map_err(account_error)?,
+            today,
+            today,
+            at,
+        ))?;
+        let month = optional_report(self.report(
+            Period::month(today).map_err(account_error)?,
+            today,
+            today,
+            at,
+        ))?;
+        window.set_summary(model(vec![
+            optional_metric(
+                "Diese Woche",
+                week.as_ref().map(|week| week.period.finalized_totals.delta),
             ),
-            Page::Times if range == Range::Day => ("Zeiterfassung", weekday_date(selected)),
-            Page::Times if range == Range::Week => (
-                "Zeiterfassung",
-                format!(
+            optional_metric(
+                "Dieser Monat",
+                month
+                    .as_ref()
+                    .map(|month| month.period.finalized_totals.delta),
+            ),
+            optional_metric("Gesamtsaldo", week.and_then(|week| week.balance_as_of)),
+        ]));
+        Ok(())
+    }
+
+    fn render_times(
+        &mut self,
+        window: &AccountWindow,
+        today: NaiveDate,
+        at: Timestamp,
+    ) -> Result<(), String> {
+        window.set_heading("Zeiten".into());
+        window.set_report_date(display_date(self.selected).into());
+        let period = self.range.period(self.selected).map_err(account_error)?;
+        window.set_subheading(
+            match self.range {
+                Range::Day => weekday_date(self.selected),
+                Range::Week => format!(
                     "Kalenderwoche {} · {} – {}",
-                    selected.iso_week().week(),
+                    self.selected.iso_week().week(),
                     display_date(period.start()),
                     display_date(period.end())
                 ),
-            ),
-            Page::Times => ("Zeiterfassung", month_year(selected)),
-            Page::Account => ("Arbeitszeitkonto", month_year(selected)),
-            _ => ("Berichte & Export", month_year(selected)),
-        };
-        window.set_heading(heading.into());
-        window.set_subheading(subheading.into());
-        window.set_report_date(display_date(selected).into());
-
-        let timeline = if self.page == Page::Today || range == Range::Day {
-            dashboard::timeline(&self.connection, selected, observed_at)?
-        } else {
-            dashboard::Timeline::default()
-        };
-        if self.page == Page::Today {
-            let calendar = self.dashboard_summary(today, observed_at, &timeline)?;
-            window.set_has_report(calendar.configured);
-            if !calendar.configured {
-                window.set_notice(
-                    "Startsaldo und Wochenplan unter Einstellungen hinterlegen.".into(),
-                );
+                Range::Month => month_year(self.selected),
             }
-            window.set_overview(calendar);
-            window.set_segments(model(timeline.rows));
-            return Ok(());
+            .into(),
+        );
+        self.show_filters(window);
+        self.record_rows(window, at)?;
+        let mut rows = Vec::new();
+        if self.range != Range::Day {
+            let mut daily = std::collections::BTreeMap::<NaiveDate, i64>::new();
+            for slice in self.selected_slices(at)? {
+                if slice.counted && slice.entry.kind == projektzeit_storage::tracker::Kind::Work {
+                    *daily.entry(slice.date).or_default() +=
+                        (slice.end - slice.start).num_milliseconds();
+                }
+            }
+            let report = optional_report(self.report(period, self.selected, today, at))?;
+            for date in period
+                .start()
+                .iter_days()
+                .take_while(|date| *date <= period.end())
+            {
+                let day = report
+                    .as_ref()
+                    .and_then(|report| report.period.days.iter().find(|day| day.date == date));
+                let target = account::daily_target(&self.connection, date).map_err(store_error)?;
+                rows.push(DayRow {
+                    date: display_date(date).into(),
+                    actual: if date > today {
+                        dash()
+                    } else {
+                        duration(daily.get(&date).copied().unwrap_or_default() / 1000, false)
+                    }
+                    .into(),
+                    target: target
+                        .map_or_else(dash, |target| duration(i64::from(target), false))
+                        .into(),
+                    delta: day
+                        .filter(|day| day.finalized && !self.tracking.filtered())
+                        .and_then(|day| day.observed)
+                        .map_or_else(dash, |totals| duration(totals.delta, true))
+                        .into(),
+                });
+            }
         }
-        window.set_segments(model(timeline.rows));
-        let as_of = selected.min(today);
-        let reports = match account::report(&mut self.connection, period, as_of, today, observed_at)
-        {
-            Ok(reports) => reports,
+        window.set_rows(model(rows));
+        Ok(())
+    }
+
+    fn render_account(
+        &mut self,
+        window: &AccountWindow,
+        today: NaiveDate,
+        at: Timestamp,
+    ) -> Result<(), String> {
+        window.set_week_metrics(model(Vec::new()));
+        window.set_month_metrics(model(Vec::new()));
+        let selected = self.selected;
+        let week = self.report(
+            Period::iso_week(selected).map_err(account_error)?,
+            selected,
+            today,
+            at,
+        );
+        let month = self.report(
+            Period::month(selected).map_err(account_error)?,
+            selected,
+            today,
+            at,
+        );
+        let week = optional_report(week)?;
+        let month = match month {
+            Ok(report) => report,
             Err(StoreError::Calculation(
                 error @ (AccountError::MissingOpening | AccountError::MissingSchedule(_)),
             )) => {
                 window.set_notice(account_error(error).into());
+                if let Some(week) = week {
+                    window.set_week_metrics(model(period_metrics(&week.period)));
+                }
                 return Ok(());
             }
             Err(error) => return Err(store_error(error)),
         };
-        let report = &reports.period;
-        let cards = vec![
-            metric("Ist netto", report.totals.actual, false),
-            metric("Soll bis Stichtag", report.totals.target, false),
-            metric("Differenz", report.totals.delta, true),
-        ];
-        let mut metrics = monthly_metrics(report);
+        if let Some(week) = week {
+            window.set_week_metrics(model(period_metrics(&week.period)));
+        }
+        let mut metrics = period_metrics(&month.period);
         metrics.push(optional_metric(
-            &format!("Gesamtsaldo am {}", display_date(as_of)),
-            reports.balance_as_of,
+            "Übertrag aus dem Vormonat",
+            month.period.opening_balance,
         ));
-        if self.page == Page::Times && range != Range::Day {
-            window.set_rows(model(
-                report
-                    .days
-                    .iter()
-                    .map(|day| DayRow {
-                        date: format!(
-                            "{} {}",
-                            WEEKDAYS_SHORT[day.date.weekday().num_days_from_monday() as usize],
-                            display_date(day.date)
-                        )
-                        .into(),
-                        actual: day
-                            .observed
-                            .map_or_else(dash, |totals| duration(totals.actual, false))
-                            .into(),
-                        target: day
-                            .planned_target
-                            .map_or_else(dash, |target| duration(i64::from(target), false))
-                            .into(),
-                        delta: day
-                            .observed
-                            .map_or_else(dash, |totals| duration(totals.delta, true))
-                            .into(),
-                    })
-                    .collect(),
-            ));
+        metrics.push(metric(
+            "Manuelle Saldoanpassungen",
+            month.period.finalized_totals.adjustments,
+            true,
+        ));
+        metrics.push(optional_metric("Gesamtsaldo", month.balance_as_of));
+        window.set_month_metrics(model(metrics));
+        if month.period.excludes_open_time || month.balance_excludes_open_time {
+            window.set_notice("Die offene Erfassung wartet noch auf Bestätigung.".into());
         }
-
-        let mut notice = if as_of < period.start() {
-            "Zukünftiger Zeitraum. Angezeigt wird das Plansoll.".to_owned()
-        } else if report.provisional || reports.balance_provisional {
-            format!("Vorläufig · Stand {}", display_date(as_of))
-        } else {
-            String::new()
-        };
-        if report.excludes_open_time || reports.balance_excludes_open_time {
-            notice.push_str(" Offene Arbeitssegmente sind bis zur Klärung ausgenommen.");
-        }
-        window.set_notice(notice.trim().into());
-        window.set_cards(model(cards));
-        window.set_metrics(model(metrics));
         window.set_has_report(true);
-        self.displayed_report = Some((as_of, reports));
-        Ok(())
-    }
-
-    fn dashboard_summary(
-        &mut self,
-        today: NaiveDate,
-        observed_at: Timestamp,
-        timeline: &dashboard::Timeline,
-    ) -> Result<Overview, String> {
-        let week_period = Period::iso_week(today).map_err(account_error)?;
-        let month_period = Period::month(today).map_err(account_error)?;
-        let mut overview = Overview {
-            worked: duration(timeline.work_seconds, false).into(),
-            breaks: duration(timeline.break_seconds, false).into(),
-            project: timeline
-                .active_project
-                .clone()
-                .unwrap_or_else(|| "Kein laufendes Projekt".into())
-                .into(),
-            remaining: dash().into(),
-            finish: dash().into(),
-            progress_label: dash().into(),
-            week_title: format!("Woche {}", today.iso_week().week()).into(),
-            week_dates: format!(
-                "{} – {}",
-                display_date(week_period.start()),
-                display_date(week_period.end())
-            )
-            .into(),
-            month_title: format!("Monatsübersicht – {}", month_year(today)).into(),
-            ..Default::default()
-        };
-        let week =
-            match account::report(&mut self.connection, week_period, today, today, observed_at) {
-                Ok(report) => report,
-                Err(StoreError::Calculation(
-                    AccountError::MissingOpening | AccountError::MissingSchedule(_),
-                )) => return Ok(overview),
-                Err(error) => return Err(store_error(error)),
-            };
-        let month = match account::report(
-            &mut self.connection,
-            month_period,
-            today,
-            today,
-            observed_at,
-        ) {
-            Ok(report) => Some(report),
-            Err(StoreError::Calculation(AccountError::MissingSchedule(_))) => None,
-            Err(error) => return Err(store_error(error)),
-        };
-        overview.configured = true;
-        if week.balance_excludes_open_time {
-            overview.notice =
-                "Vorläufig · Offene Arbeitssegmente sind bis zur Klärung ausgenommen.".into();
-        } else {
-            overview.notice = format!("Vorläufig · Stand {}", display_date(today)).into();
-        }
-        if let Some(target) = week
-            .period
-            .days
-            .iter()
-            .find(|day| day.date == today)
-            .and_then(|day| day.planned_target)
-        {
-            let target = i64::from(target);
-            overview.daily_target = format!("Soll: {}", duration(target, false)).into();
-            overview.remaining = duration((target - timeline.work_seconds).max(0), false).into();
-            if target > 0 {
-                overview.progress = (timeline.work_seconds as f32 / target as f32).min(1.0);
-                overview.progress_label = format!("{:.0} %", overview.progress * 100.0).into();
-            }
-        }
-        overview.balances = model(vec![
-            metric("Diese Woche", week.period.totals.delta, true),
-            optional_metric(
-                "Dieser Monat",
-                month.as_ref().map(|month| month.period.totals.delta),
-            ),
-            optional_metric("Gesamtsaldo", week.balance_as_of),
-        ]);
-        overview.week = model(vec![
-            metric("Soll bis Stichtag", week.period.totals.target, false),
-            metric("Iststunden", week.period.totals.actual, false),
-            metric("Differenz", week.period.totals.delta, true),
-        ]);
-        overview.chart = model(chart_days(&week.period));
-        if let Some(month) = month {
-            let report = &month.period;
-            overview.month = model(vec![
-                optional_metric("Übertrag", report.opening_balance),
-                metric("Soll bis Stichtag", report.totals.target, false),
-                metric("Iststunden", report.totals.actual, false),
-                metric("Monatsdifferenz", report.totals.delta, true),
-                metric("Manuelle Korrekturen", report.totals.adjustments, true),
-                optional_metric("Neuer Gesamtsaldo", report.closing_balance),
-            ]);
-        }
-        Ok(overview)
-    }
-
-    fn update_mini(&mut self) -> Result<(), String> {
-        let observed_at = now();
-        let today = local_date(observed_at, self.zone);
-        let timeline = dashboard::timeline(&self.connection, today, observed_at)?;
-        let overview = self.dashboard_summary(today, observed_at, &timeline)?;
-        if let Some(mini) = &self.mini {
-            mini.set_overview(overview);
-        }
+        self.displayed_report = Some((selected.min(today), month));
         Ok(())
     }
 
@@ -938,6 +864,7 @@ impl Controller {
                 )
             },
         );
+        window.set_opening_summary(opening.as_str().into());
         let mut lines = vec![opening.into()];
         if settings.schedules.is_empty() {
             lines.push("Wochenplan: noch nicht festgelegt".into());
@@ -993,7 +920,9 @@ impl Controller {
         let history = account::audit_history(&self.connection).map_err(store_error)?;
         let mut events = Vec::new();
         for event in history {
-            if self.page == Page::Corrections && event.entity != "adjustment" {
+            if (self.page == Page::Account)
+                != matches!(event.entity.as_str(), "opening" | "adjustment")
+            {
                 continue;
             }
             let time = DateTime::from_timestamp_millis(event.occurred_at_utc_ms)
@@ -1084,7 +1013,7 @@ impl Controller {
         };
         let preview = account::preview(&mut self.connection, change, today, observed_at)
             .map_err(store_error)?;
-        window.set_preview_text(format!("{description}\nGültig ab / am {}\n\nVorläufiger Gesamtsaldo am {}\nVorher: {}\nNachher: {}\n\nTagessoll am Gültigkeitsdatum: {} → {}",
+        window.set_preview_text(format!("{description}\nGültig ab / am {}\n\nAbgeschlossener Gesamtsaldo am {}\nVorher: {}\nNachher: {}\n\nTagessoll am Gültigkeitsdatum: {} → {}",
             display_date(preview.effective_date()), display_date(preview.as_of()),
             impact(preview.before()), impact(preview.after()),
             target(preview.before()), target(preview.after())).into());
@@ -1178,7 +1107,6 @@ fn target(impact: Impact) -> String {
         .map_or_else(dash, |value| duration(i64::from(value), false))
 }
 
-const WEEKDAYS_SHORT: [&str; 7] = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const WEEKDAYS: [&str; 7] = [
     "Montag",
     "Dienstag",
@@ -1224,40 +1152,23 @@ fn greeting(hour: u32) -> &'static str {
     }
 }
 
-fn monthly_metrics(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<Metric> {
-    vec![
-        optional_metric("Anfangssaldo", report.opening_balance),
-        metric("Volles Plansoll", report.full_planned_target, false),
-        metric(
-            "Verbleibendes Plansoll",
-            report.remaining_planned_target,
-            false,
-        ),
-        metric("Manuelle Korrekturen", report.totals.adjustments, true),
-        optional_metric("Schlusssaldo bis Stichtag", report.closing_balance),
-    ]
+fn optional_report(result: Result<Reports, StoreError>) -> Result<Option<Reports>, String> {
+    match result {
+        Ok(report) => Ok(Some(report)),
+        Err(StoreError::Calculation(
+            AccountError::MissingOpening | AccountError::MissingSchedule(_),
+        )) => Ok(None),
+        Err(error) => Err(store_error(error)),
+    }
 }
 
-fn chart_days(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<ChartDay> {
-    let ceiling = report
-        .days
-        .iter()
-        .map(|day| {
-            i64::from(day.planned_target.unwrap_or_default())
-                .max(day.observed.map_or(0, |day| day.actual))
-        })
-        .max()
-        .unwrap_or_default()
-        .max(1);
-    report
-        .days
-        .iter()
-        .map(|day| ChartDay {
-            label: WEEKDAYS_SHORT[day.date.weekday().num_days_from_monday() as usize].into(),
-            target: day.planned_target.unwrap_or_default() as f32 / ceiling as f32,
-            actual: day.observed.map_or(0, |day| day.actual) as f32 / ceiling as f32,
-        })
-        .collect()
+fn period_metrics(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<Metric> {
+    vec![
+        metric("Ist netto bis Stichtag", report.totals.actual, false),
+        metric("Fälliges Soll", report.finalized_totals.target, false),
+        metric("Volles Plansoll", report.full_planned_target, false),
+        metric("Abgeschlossener Saldo", report.finalized_totals.delta, true),
+    ]
 }
 
 fn preference_error(error: rusqlite::Error) -> String {
@@ -1306,7 +1217,7 @@ fn account_error(error: AccountError) -> String {
             "Die sieben Tagessollwerte müssen zusammen das Wochensoll ergeben.".into()
         }
         AccountError::MissingOpening => {
-            "Bitte zuerst den Startsaldo unter Einstellungen erfassen.".into()
+            "Bitte zuerst den Startsaldo im Arbeitszeitkonto erfassen.".into()
         }
         AccountError::MissingSchedule(date) => format!(
             "Am {} fehlt ein Wochenplan. Bitte unter Einstellungen ergänzen.",
