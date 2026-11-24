@@ -191,6 +191,58 @@ pub fn settings(db: &mut Connection) -> Result<Settings, StoreError> {
     Ok(settings)
 }
 
+/// Return the schedule in force on this local calendar date.
+pub fn schedule_at(db: &Connection, date: NaiveDate) -> Result<Option<WeeklySchedule>, StoreError> {
+    use rusqlite::OptionalExtension;
+
+    db.query_row(
+        "SELECT weekly_seconds, monday, tuesday, wednesday, thursday, friday, saturday, sunday
+         FROM work_schedules
+         WHERE effective_date <= ?1 AND superseded_at_utc_ms IS NULL
+         ORDER BY effective_date DESC LIMIT 1",
+        [date.to_string()],
+        |row| {
+            Ok((
+                row.get(0)?,
+                [
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ],
+            ))
+        },
+    )
+    .optional()?
+    .map(|(weekly, weekdays)| WeeklySchedule::new(weekly, weekdays).map_err(StoreError::from))
+    .transpose()
+}
+
+/// Save a plan effective today without replacing earlier or future dates.
+pub fn save_current_schedule(
+    db: &mut Connection,
+    today: NaiveDate,
+    schedule: WeeklySchedule,
+    occurred_at: Timestamp,
+) -> Result<(), StoreError> {
+    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if schedule_at(&transaction, today)? != Some(schedule) {
+        changes::write(
+            &transaction,
+            Change::Schedule {
+                effective_date: today,
+                schedule,
+            },
+            occurred_at.timestamp_millis(),
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn audit_history(db: &Connection) -> Result<Vec<AuditEvent>, StoreError> {
     let mut statement = db.prepare(
         "SELECT id, entity_type, entity_key, action, reason, old_value_json, new_value_json, occurred_at_utc_ms

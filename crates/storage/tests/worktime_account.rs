@@ -301,3 +301,57 @@ fn audit_write_failure_rolls_back_configuration_and_supersession() {
     assert_eq!(stored.effective_date, date("2025-12-29"));
     assert_eq!(audit_history(&db).unwrap().len(), 2);
 }
+
+#[test]
+fn automatic_schedule_edits_preserve_past_and_future_targets_across_restart() {
+    use projektzeit_storage::worktime_account::{save_current_schedule, schedule_at};
+
+    let folder = tempdir().unwrap();
+    let path = folder.path().join("account.sqlite");
+    let mut db = open(&path).unwrap();
+    configure(&mut db);
+    let today = date("2026-01-05");
+    let tomorrow = date("2026-01-06");
+    let yesterday = date("2026-01-04");
+    let upcoming =
+        WeeklySchedule::new(72_000, [14_400, 14_400, 14_400, 14_400, 14_400, 0, 0]).unwrap();
+    change(
+        &mut db,
+        Change::Schedule {
+            effective_date: tomorrow,
+            schedule: upcoming,
+        },
+    );
+    let current =
+        WeeklySchedule::new(144_000, [28_800, 28_800, 28_800, 28_800, 28_800, 0, 0]).unwrap();
+    let corrected =
+        WeeklySchedule::new(147_600, [32_400, 28_800, 28_800, 28_800, 28_800, 0, 0]).unwrap();
+    save_current_schedule(&mut db, today, current, observed_at()).unwrap();
+    save_current_schedule(&mut db, today, corrected, observed_at()).unwrap();
+    let length = audit_history(&db).unwrap().len();
+    save_current_schedule(&mut db, today, corrected, observed_at()).unwrap();
+    assert_eq!(audit_history(&db).unwrap().len(), length);
+    drop(db);
+
+    let mut db = open(path).unwrap();
+    assert_eq!(
+        schedule_at(&db, yesterday)
+            .unwrap()
+            .unwrap()
+            .weekly_seconds(),
+        0
+    );
+    assert_eq!(schedule_at(&db, today).unwrap(), Some(corrected));
+    assert_eq!(schedule_at(&db, tomorrow).unwrap(), Some(upcoming));
+    let day = report(&mut db, Period::day(today), today, today, observed_at()).unwrap();
+    assert_eq!(day.period.totals.target, 32_400);
+    let old = report(
+        &mut db,
+        Period::day(yesterday),
+        yesterday,
+        today,
+        observed_at(),
+    )
+    .unwrap();
+    assert_eq!(old.period.totals.target, 0);
+}

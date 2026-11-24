@@ -3406,11 +3406,13 @@ dependencies = [
  "iana-time-zone",
  "projektzeit-core",
  "projektzeit-storage",
+ "raw-window-handle",
  "rusqlite",
  "rust_xlsxwriter",
  "serde_json",
  "slint",
  "tempfile",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -3923,12 +3925,14 @@ dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
  "i-slint-renderer-software",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "vtable",
 ]

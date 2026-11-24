@@ -4,11 +4,19 @@ mod dashboard;
 
 mod export;
 mod input;
+mod preferences;
+mod window;
 // Slint generates the window bindings in this module.
 #[allow(unsafe_code)]
 mod view;
 
-use std::{cell::RefCell, ffi::OsStr, path::PathBuf, rc::Rc, time::SystemTime};
+use std::{
+    cell::RefCell,
+    ffi::OsStr,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, SystemTime},
+};
 
 use chrono::{DateTime, Datelike, Months, NaiveDate, TimeDelta, Timelike};
 use chrono_tz::Tz;
@@ -19,13 +27,16 @@ use projektzeit_core::{
 use projektzeit_storage::worktime_account::{
     self as account, BalanceState, Change, Impact, Preview, Reports, StoreError,
 };
-use rusqlite::{Connection, OptionalExtension};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use rusqlite::Connection;
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 
 use input::{display_date, duration, parse_change, parse_date};
+use preferences::{APPEARANCE_KEY, MiniPreferences, Point, ScheduleDraft};
 use view::{
-    AccountWindow, AdjustmentRow, ChartDay, DayRow, EditFields, Metric, MiniTimer, Overview,
+    AccountWindow, AdjustmentRow, ChartDay, DayRow, EditFields, Metric, MiniOptions, MiniTimer,
+    Overview, ScheduleInputs,
 };
+use window::{Visibility, WindowAction, WindowState};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(i32)]
@@ -67,7 +78,6 @@ impl Range {
     }
 }
 
-const THEME_KEY: &str = "appearance.color_scheme";
 const THEMES: [&str; 3] = ["system", "light", "dark"];
 
 struct Controller {
@@ -78,7 +88,17 @@ struct Controller {
     range: Range,
     pending: Option<Preview>,
     displayed_report: Option<(NaiveDate, Reports)>,
+    scheme: i32,
+    schedule: ScheduleDraft,
+    dated_draft: EditFields,
+    schedule_save: Timer,
     mini: Option<MiniTimer>,
+    mini_preferences: MiniPreferences,
+    mini_state: WindowState,
+    saved_position: Option<Point>,
+    placed_position: Option<Point>,
+    placing_mini: bool,
+    position_save: Timer,
 }
 
 pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
@@ -93,29 +113,51 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
     })?;
     let connection = projektzeit_storage::open(path)
         .map_err(|error| format!("Datenbank konnte nicht geöffnet werden ({error})."))?;
+    window::initialize()
+        .map_err(|error| format!("Fenstersystem konnte nicht gestartet werden ({error})."))?;
     let window = AccountWindow::new()
         .map_err(|error| format!("Fenster konnte nicht geöffnet werden ({error})."))?;
-    let stored_theme: Option<String> = connection
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [THEME_KEY],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(theme_error)?;
-    let theme = THEMES
+    let stored_theme = preferences::get(&connection, APPEARANCE_KEY).map_err(preference_error)?;
+    let scheme = THEMES
         .iter()
-        .position(|&theme| Some(theme) == stored_theme.as_deref());
-    window.set_scheme(theme.unwrap_or_default() as i32);
+        .position(|&theme| Some(theme) == stored_theme.as_deref())
+        .unwrap_or_default() as i32;
+    let mini_preferences = MiniPreferences::load(&connection).map_err(preference_error)?;
+    let saved_position = preferences::load_position(&connection).map_err(preference_error)?;
+    let today = local_date(now(), zone);
+    let schedule = ScheduleDraft::new(
+        today,
+        account::schedule_at(&connection, today).map_err(store_error)?,
+    );
     let controller = Rc::new(RefCell::new(Controller {
         connection,
         zone,
         page: Page::Today,
-        selected: local_date(now(), zone),
+        selected: today,
         range: Range::default(),
         pending: None,
         displayed_report: None,
+        scheme,
+        schedule,
+        dated_draft: EditFields {
+            date: display_date(today).into(),
+            monday: "00:00".into(),
+            tuesday: "00:00".into(),
+            wednesday: "00:00".into(),
+            thursday: "00:00".into(),
+            friday: "00:00".into(),
+            saturday: "00:00".into(),
+            sunday: "00:00".into(),
+            ..Default::default()
+        },
+        schedule_save: Timer::default(),
         mini: None,
+        mini_preferences,
+        mini_state: WindowState::default(),
+        saved_position,
+        placed_position: None,
+        placing_mini: false,
+        position_save: Timer::default(),
     }));
     connect(&window, &controller);
     controller.borrow_mut().render(&window)?;
@@ -126,6 +168,8 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
 
 fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_navigate(action(window, controller, |state, window, page| {
+        state.schedule_save.stop();
+        let saved = state.save_schedule(window);
         state.page = match page {
             0 => Page::Today,
             1 => Page::Times,
@@ -137,33 +181,10 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
             _ => Page::About,
         };
         state.clear_preview(window);
-        state.render(window)
+        state.render(window)?;
+        saved
     }));
-    let show_mini = action(window, controller, |state, window, ()| {
-        if state.mini.is_none() {
-            let mini = MiniTimer::new().map_err(|error| error.to_string())?;
-            let main = window.as_weak();
-            mini.on_open_main(move || {
-                if let Some(window) = main.upgrade() {
-                    let _ = window.show();
-                    window.window().set_minimized(false);
-                }
-            });
-            let main = window.as_weak();
-            mini.on_refresh(move || {
-                if let Some(window) = main.upgrade() {
-                    window.invoke_refresh_mini();
-                }
-            });
-            state.mini = Some(mini);
-        }
-        state.update_mini()?;
-        if let Some(mini) = &state.mini {
-            mini.show().map_err(|error| error.to_string())?;
-        }
-        Ok(())
-    });
-    window.on_show_mini(move || show_mini(()));
+    connect_desktop(window, controller);
     let mini_refresh = {
         let state = Rc::downgrade(controller);
         move || {
@@ -192,14 +213,8 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
         let value = THEMES
             .get(index as usize)
             .ok_or_else(|| "Unbekanntes Erscheinungsbild.".to_owned())?;
-        state
-            .connection
-            .execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (THEME_KEY, value),
-            )
-            .map_err(theme_error)?;
+        preferences::put(&state.connection, APPEARANCE_KEY, value).map_err(preference_error)?;
+        state.scheme = index;
         window.set_scheme(index);
         Ok(())
     }));
@@ -239,7 +254,16 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
             .ok_or_else(|| "Bitte zuerst eine Vorschau erstellen.".to_owned())?;
         window.set_preview_ready(false);
         account::apply(&mut state.connection, preview, now()).map_err(store_error)?;
+        if !state.schedule.dirty {
+            let today = local_date(now(), state.zone);
+            state.schedule = ScheduleDraft::new(
+                today,
+                account::schedule_at(&state.connection, today).map_err(store_error)?,
+            );
+        }
         state.render(window)?;
+        state.refresh_visible_mini()?;
+
         window.set_feedback("Änderung gespeichert.".into());
         Ok(())
     });
@@ -264,6 +288,130 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
     ));
 }
 
+fn connect_desktop(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
+    let show_mini = action(window, controller, |state, window, ()| {
+        state.show_mini(window, Visibility::Manual)
+    });
+    window.on_show_mini(move || show_mini(()));
+    window.on_native_minimized(action(window, controller, |state, window, minimized| {
+        let change = state
+            .mini_state
+            .minimize_changed(minimized, state.mini_preferences.auto_show);
+        state.apply_window_action(window, change)
+    }));
+    window::observe_main(window.window(), {
+        let main = window.as_weak();
+        move |minimized| {
+            if let Some(window) = main.upgrade() {
+                window.invoke_native_minimized(minimized);
+            }
+        }
+    });
+
+    let moved = action(window, controller, {
+        let controller = Rc::downgrade(controller);
+        move |state, window, ()| {
+            if state.placing_mini {
+                state.place_mini(window);
+            } else if state.mini_state.visibility != Visibility::Hidden
+                && state.mini_preferences.remember
+            {
+                let controller = controller.clone();
+                state.position_save.start(
+                    TimerMode::SingleShot,
+                    Duration::from_millis(300),
+                    move || {
+                        if let Some(controller) = controller.upgrade() {
+                            let _ = controller.borrow_mut().remember_mini_position();
+                        }
+                    },
+                );
+            }
+            Ok(())
+        }
+    });
+    window.on_mini_moved(move || moved(()));
+    let closed = action(window, controller, |state, _, ()| {
+        state.position_save.stop();
+        let result = state.remember_mini_position();
+        state.mini_state.visibility = Visibility::Hidden;
+        state.placing_mini = false;
+        result
+    });
+    window.on_mini_closed(move || closed(()));
+    let change_mini_option = action(window, controller, |state, window, (index, value)| {
+        state.set_mini_option(window, index, value)
+    });
+    window.on_change_mini_option(move |index, value| change_mini_option((index, value)));
+    let reset = action(window, controller, |state, window, ()| {
+        preferences::save_position(&state.connection, None).map_err(preference_error)?;
+        state.saved_position = None;
+        state.position_save.stop();
+        if state.mini_state.visibility != Visibility::Hidden {
+            state.place_mini(window);
+        }
+        window.set_feedback("Fensterposition zurückgesetzt.".into());
+        Ok(())
+    });
+    window.on_reset_mini_position(move || reset(()));
+
+    let edit = action(window, controller, {
+        let controller = Rc::downgrade(controller);
+        move |state, window, (index, value): (i32, slint::SharedString)| {
+            state.schedule_save.stop();
+            state.schedule.edit(index as usize, value.to_string());
+            state.show_schedule(window);
+            if state.schedule.candidate.is_some() {
+                let controller = controller.clone();
+                let main = window.as_weak();
+                state.schedule_save.start(
+                    TimerMode::SingleShot,
+                    Duration::from_millis(500),
+                    move || {
+                        if let (Some(controller), Some(window)) =
+                            (controller.upgrade(), main.upgrade())
+                        {
+                            let mut state = controller.borrow_mut();
+                            if let Err(error) = state
+                                .save_schedule(&window)
+                                .and_then(|()| state.render(&window))
+                            {
+                                window.set_feedback(error.into());
+                            }
+                        }
+                    },
+                );
+            }
+            Ok(())
+        }
+    });
+    window.on_edit_schedule(move |index, value| edit((index, value)));
+    window.on_capture_dated(action(
+        window,
+        controller,
+        |state, window, fields: EditFields| {
+            window.set_dated_draft(fields.clone());
+            state.dated_draft = fields;
+            Ok(())
+        },
+    ));
+
+    let state = Rc::downgrade(controller);
+    let main = window.as_weak();
+    window.window().on_close_requested(move || {
+        if let (Some(state), Some(window)) = (state.upgrade(), main.upgrade()) {
+            let mut state = state.borrow_mut();
+            state.schedule_save.stop();
+            if let Err(error) = state.save_schedule(&window) {
+                window.set_feedback(error.into());
+                return CloseRequestResponse::KeepWindowShown;
+            }
+            let _ = state.remember_mini_position();
+        }
+        CloseRequestResponse::HideWindow
+    });
+}
+
 fn action<A>(
     window: &AccountWindow,
     controller: &Rc<RefCell<Controller>>,
@@ -282,6 +430,206 @@ fn action<A>(
 }
 
 impl Controller {
+    fn show_schedule(&self, window: &AccountWindow) {
+        window.set_schedule(ScheduleInputs {
+            values: model(
+                self.schedule
+                    .input
+                    .iter()
+                    .map(|text| text.as_str().into())
+                    .collect(),
+            ),
+            date: display_date(self.schedule.date).into(),
+            message: self.schedule.message.as_str().into(),
+            invalid: self.schedule.invalid,
+        });
+    }
+
+    fn save_schedule(&mut self, window: &AccountWindow) -> Result<(), String> {
+        let Some(schedule) = self.schedule.candidate else {
+            return Ok(());
+        };
+        let observed_at = now();
+        let today = local_date(observed_at, self.zone);
+        if let Err(error) =
+            account::save_current_schedule(&mut self.connection, today, schedule, observed_at)
+        {
+            let message = format!(
+                "Arbeitszeit konnte nicht gespeichert werden. Eingaben bleiben erhalten. ({error})"
+            );
+            self.schedule.failure(message.clone());
+            self.show_schedule(window);
+            return Err(message);
+        }
+        self.schedule.saved(today);
+        self.show_schedule(window);
+        self.refresh_visible_mini()
+    }
+
+    fn show_mini(&mut self, main: &AccountWindow, visibility: Visibility) -> Result<(), String> {
+        if self.mini.is_none() {
+            let mini = window::create_mini(|| {
+                let mini = MiniTimer::new()?;
+                let _ = mini.window();
+                Ok::<_, slint::PlatformError>(mini)
+            })
+            .map_err(window_error)?;
+            let weak = main.as_weak();
+            mini.on_open_main(move || {
+                if let Some(main) = weak.upgrade() {
+                    let _ = main.show();
+                    window::restore_main(main.window());
+                }
+            });
+            let weak = main.as_weak();
+            mini.on_refresh(move || {
+                if let Some(main) = weak.upgrade() {
+                    main.invoke_refresh_mini();
+                }
+            });
+            let weak = main.as_weak();
+            mini.on_set_pin(move |pinned| {
+                if let Some(main) = weak.upgrade() {
+                    main.invoke_change_mini_option(1, pinned);
+                }
+            });
+            let weak = main.as_weak();
+            mini.window().on_close_requested(move || {
+                if let Some(main) = weak.upgrade() {
+                    main.invoke_mini_closed();
+                }
+                CloseRequestResponse::HideWindow
+            });
+            let weak = main.as_weak();
+            window::observe_mini(mini.window(), move || {
+                if let Some(main) = weak.upgrade() {
+                    main.invoke_mini_moved();
+                }
+            });
+            self.mini = Some(mini);
+        }
+        self.update_mini()?;
+        let mini = self
+            .mini
+            .as_ref()
+            .expect("the mini-timer was created above");
+        mini.set_pinned(self.mini_preferences.topmost);
+        if !mini.window().is_visible() {
+            if visibility == Visibility::Automatic {
+                window::show_without_activation(mini.window(), || mini.show())
+                    .map_err(window_error)?;
+            } else {
+                mini.show().map_err(window_error)?;
+            }
+            self.mini_state.visibility = visibility;
+            self.place_mini(main);
+        } else if visibility == Visibility::Manual {
+            self.mini_state.visibility = visibility;
+            mini.window().set_minimized(false);
+        }
+        Ok(())
+    }
+
+    fn place_mini(&mut self, main: &AccountWindow) {
+        let Some(mini) = &self.mini else { return };
+        self.placed_position = window::place(
+            main.window(),
+            mini.window(),
+            self.saved_position
+                .filter(|_| self.mini_preferences.remember),
+            self.mini_preferences.margin,
+        );
+        self.placing_mini = self.placed_position.is_none();
+    }
+
+    fn remember_mini_position(&mut self) -> Result<(), String> {
+        if self.mini_state.visibility == Visibility::Hidden
+            || self.placing_mini
+            || !self.mini_preferences.remember
+        {
+            return Ok(());
+        }
+        if let Some(mini) = &self.mini {
+            let point = window::position(mini.window());
+            if self.placed_position != Some(point) && self.saved_position != Some(point) {
+                preferences::save_position(&self.connection, Some(point))
+                    .map_err(preference_error)?;
+                self.saved_position = Some(point);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_window_action(
+        &mut self,
+        main: &AccountWindow,
+        action: WindowAction,
+    ) -> Result<(), String> {
+        match action {
+            WindowAction::ShowAutomatically => self.show_mini(main, Visibility::Automatic),
+            WindowAction::Hide => {
+                self.position_save.stop();
+                let saved = self.remember_mini_position();
+                if let Some(mini) = &self.mini {
+                    mini.hide().map_err(window_error)?;
+                }
+                self.mini_state.visibility = Visibility::Hidden;
+                self.placing_mini = false;
+                saved
+            }
+            WindowAction::Keep => Ok(()),
+        }
+    }
+
+    fn set_mini_option(
+        &mut self,
+        main: &AccountWindow,
+        index: i32,
+        value: bool,
+    ) -> Result<(), String> {
+        let mut preferences = self.mini_preferences;
+        match index {
+            0 => preferences.auto_show = value,
+            1 => preferences.topmost = value,
+            2 => preferences.remember = value,
+            _ => return Ok(()),
+        }
+        let transaction = self.connection.transaction().map_err(preference_error)?;
+        preferences.save(&transaction).map_err(preference_error)?;
+        if !preferences.remember {
+            preferences::save_position(&transaction, None).map_err(preference_error)?;
+        }
+        transaction.commit().map_err(preference_error)?;
+        self.mini_preferences = preferences;
+        if !preferences.remember {
+            self.saved_position = None;
+        }
+        self.show_mini_options(main);
+        if let Some(mini) = &self.mini {
+            mini.set_pinned(preferences.topmost);
+        }
+        if index == 0 {
+            self.apply_window_action(main, self.mini_state.preference_changed(value))?;
+        }
+        main.set_feedback("Mini-Timer-Einstellungen gespeichert.".into());
+        Ok(())
+    }
+
+    fn show_mini_options(&self, window: &AccountWindow) {
+        window.set_mini_options(MiniOptions {
+            auto_show: self.mini_preferences.auto_show,
+            topmost: self.mini_preferences.topmost,
+            remember: self.mini_preferences.remember,
+        });
+    }
+
+    fn refresh_visible_mini(&mut self) -> Result<(), String> {
+        if self.mini_state.visibility != Visibility::Hidden {
+            self.update_mini()?;
+        }
+        Ok(())
+    }
+
     fn report_range(&self) -> Range {
         match self.page {
             Page::Times => self.range,
@@ -292,6 +640,8 @@ impl Controller {
 
     fn render(&mut self, window: &AccountWindow) -> Result<(), String> {
         window.set_page(self.page as i32);
+        window.set_scheme(self.scheme);
+        self.show_mini_options(window);
         window.set_range_index(match self.range {
             Range::Day => 0,
             Range::Week => 1,
@@ -316,6 +666,16 @@ impl Controller {
                     .into(),
                 );
                 window.set_report_date(display_date(today).into());
+                if self.page == Page::Settings {
+                    if !self.schedule.dirty && self.schedule.date != today {
+                        self.schedule = ScheduleDraft::new(
+                            today,
+                            account::schedule_at(&self.connection, today).map_err(store_error)?,
+                        );
+                    }
+                    self.show_schedule(window);
+                    window.set_dated_draft(self.dated_draft.clone());
+                }
                 self.render_settings(window)
             }
             Page::About => {
@@ -900,8 +1260,12 @@ fn chart_days(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<
         .collect()
 }
 
-fn theme_error(error: rusqlite::Error) -> String {
-    format!("Erscheinungsbild konnte nicht geladen oder gespeichert werden ({error}).")
+fn preference_error(error: rusqlite::Error) -> String {
+    format!("Einstellungen konnten nicht geladen oder gespeichert werden ({error}).")
+}
+
+fn window_error(error: slint::PlatformError) -> String {
+    format!("Das Mini-Timer-Fenster konnte nicht geändert werden ({error}).")
 }
 
 fn metric(label: &str, value: Seconds, signed: bool) -> Metric {

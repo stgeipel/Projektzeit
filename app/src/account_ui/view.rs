@@ -1,7 +1,9 @@
 slint::slint! {
     #[edition = "1.19"]
-    import { AboutSlint, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+    import { AboutSlint, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
+    export struct ScheduleInputs { values: [string], message: string, invalid: bool, date: string }
+    export struct MiniOptions { auto-show: bool, topmost: bool, remember: bool }
     export struct Metric { label: string, value: string }
     export struct DayRow { date: string, actual: string, target: string, delta: string }
     export struct SegmentRow {
@@ -382,17 +384,99 @@ slint::slint! {
     component WeekdayField inherits VerticalLayout {
         in property <string> label;
         in property <bool> editable: true;
+        in property <string> initial: "00:00";
         out property <string> amount: field.text;
+        callback edit;
         spacing: 4px;
         Label { text: root.label; }
         field := LineEdit {
-            text: "00:00"; enabled: root.editable; accessible-label: root.label;
+            text: root.initial; enabled: root.editable; accessible-label: root.label;
+            edited => { root.edit(); }
             min-width: 50px; preferred-width: 72px; horizontal-stretch: 1;
+        }
+    }
+
+    component CurrentSchedule inherits Card {
+        in property <ScheduleInputs> draft;
+        callback edit(int, string);
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            SectionTitle { text: "Aktuelle Arbeitszeit"; }
+            Label {
+                text: "Änderungen gelten ab " + root.draft.date
+                    + ". Das Wochensoll verteilt sich auf die bestehenden Arbeitstage. Tagesänderungen aktualisieren die Wochensumme.";
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Wochensoll"; vertical-alignment: center; horizontal-stretch: 0; }
+                LineEdit {
+                    accessible-label: "Wochensoll";
+                    text: root.draft.values[0];
+                    placeholder-text: "z. B. 38:00";
+                    horizontal-stretch: 0;
+                    edited(value) => { root.edit(0, value); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 5px;
+                for day[index] in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]: VerticalLayout {
+                    spacing: 4px;
+                    Label { text: day; }
+                    LineEdit {
+                        min-width: 50px;
+                        preferred-width: 72px;
+                        text: root.draft.values[index + 1];
+                        accessible-label: "Tagessoll " + day;
+                        edited(value) => { root.edit(index + 1, value); }
+                    }
+                }
+            }
+            if root.draft.message != "": Label {
+                text: root.draft.message;
+                color: root.draft.invalid ? Theme.warning : Theme.green;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    component MiniSettings inherits Card {
+        in property <MiniOptions> mini-options;
+        callback change-option(int, bool);
+        callback reset-position;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            SectionTitle { text: "Mini-Timer"; }
+            CheckBox {
+                text: "Mini-Timer beim Minimieren anzeigen";
+                checked: root.mini-options.auto-show;
+                toggled => { root.change-option(0, self.checked); }
+            }
+            CheckBox {
+                text: "Mini-Timer immer im Vordergrund";
+                checked: root.mini-options.topmost;
+                toggled => { root.change-option(1, self.checked); }
+            }
+            CheckBox {
+                text: "Letzte Fensterposition merken";
+                checked: root.mini-options.remember;
+                toggled => { root.change-option(2, self.checked); }
+            }
+            HorizontalLayout {
+                ActionButton { label: "Fensterposition zurücksetzen"; clicked => { root.reset-position(); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
         }
     }
 
     component AccountSettings inherits VerticalLayout {
         in property <int> scheme;
+        in property <ScheduleInputs> schedule;
+        in property <EditFields> dated-draft;
+        in property <MiniOptions> mini-options;
         in property <bool> corrections;
         in property <[AdjustmentRow]> adjustments;
         in property <string> date;
@@ -401,9 +485,24 @@ slint::slint! {
         in property <string> preview-text;
         in property <bool> preview-ready;
         callback change-scheme(int);
+        callback edit-schedule(int, string);
+        callback change-mini-option(int, bool);
+        callback reset-mini-position;
         callback preview-edit(EditFields);
+        callback capture-dated(EditFields);
         callback confirm-edit();
         callback cancel-edit();
+        function fields() -> EditFields {
+            return {
+                kind: kind.operation, date: date-field.text, amount: amount.text,
+                monday: monday.amount, tuesday: tuesday.amount, wednesday: wednesday.amount,
+                thursday: thursday.amount, friday: friday.amount, saturday: saturday.amount,
+                sunday: sunday.amount, reason: reason.text, entry-id: entry.text
+            };
+        }
+        function remember-dated() {
+            if (!root.corrections) { root.capture-dated(root.fields()); }
+        }
         spacing: 14px;
         alignment: start;
 
@@ -423,18 +522,28 @@ slint::slint! {
             }
         }
 
+        if !root.corrections: CurrentSchedule {
+            draft: root.schedule;
+            edit(index, value) => { root.edit-schedule(index, value); }
+        }
+        if !root.corrections: MiniSettings {
+            mini-options: root.mini-options;
+            change-option(index, value) => { root.change-mini-option(index, value); }
+            reset-position => { root.reset-mini-position(); }
+        }
         Card {
             VerticalLayout {
                 padding: 16px;
                 spacing: 10px;
-                SectionTitle { text: root.corrections ? "Korrektur erfassen" : "Arbeitszeit"; }
+                SectionTitle { text: root.corrections ? "Korrektur erfassen" : "Datierte Arbeitszeitregeln"; }
                 kind := ComboBox {
                     property <int> operation: self.current-index + (root.corrections ? 4 : 0);
                     model: root.corrections
                         ? ["Neue Korrektur", "Korrektur bearbeiten", "Korrektur stornieren"]
-                        : ["Wochenplan", "Startsaldo", "Tagessoll setzen", "Tagessoll zurücksetzen"];
-                    current-index: 0;
+                        : ["Wochenplan mit Gültigkeitsdatum", "Startsaldo", "Tagessoll setzen", "Tagessoll zurücksetzen"];
+                    current-index: root.corrections ? 0 : root.dated-draft.kind;
                     accessible-label: "Art der Änderung";
+                    selected => { root.remember-dated(); }
                     enabled: !root.preview-ready;
                 }
                 HorizontalLayout {
@@ -443,13 +552,16 @@ slint::slint! {
                         enabled: !root.preview-ready && kind.operation != 6;
                         placeholder-text: "Gültig ab (TT.MM.JJJJ)";
                         accessible-label: "Gültig ab";
-                        text: root.date;
+                        text: root.corrections ? root.date : root.dated-draft.date;
+                        edited => { root.remember-dated(); }
                         min-width: 105px;
                     }
                     amount := LineEdit {
                         enabled: !root.preview-ready && kind.operation != 3 && kind.operation != 6;
                         placeholder-text: kind.operation == 0 ? "Wochensoll (hh:mm)" : "Dauer (±hh:mm)";
                         accessible-label: "Dauer";
+                        text: root.corrections ? "" : root.dated-draft.amount;
+                        edited => { root.remember-dated(); }
                         min-width: 110px;
                     }
                 }
@@ -457,13 +569,41 @@ slint::slint! {
                     visible: kind.operation == 0;
                     height: kind.operation == 0 ? self.preferred-height : 0px;
                     spacing: 5px;
-                    monday := WeekdayField { editable: !root.preview-ready; label: "Mo"; }
-                    tuesday := WeekdayField { editable: !root.preview-ready; label: "Di"; }
-                    wednesday := WeekdayField { editable: !root.preview-ready; label: "Mi"; }
-                    thursday := WeekdayField { editable: !root.preview-ready; label: "Do"; }
-                    friday := WeekdayField { editable: !root.preview-ready; label: "Fr"; }
-                    saturday := WeekdayField { editable: !root.preview-ready; label: "Sa"; }
-                    sunday := WeekdayField { editable: !root.preview-ready; label: "So"; }
+                    monday := WeekdayField {
+                        editable: !root.preview-ready; label: "Mo";
+                        initial: root.corrections ? "00:00" : root.dated-draft.monday;
+                        edit => { root.remember-dated(); }
+                    }
+                    tuesday := WeekdayField {
+                        editable: !root.preview-ready; label: "Di";
+                        initial: root.corrections ? "00:00" : root.dated-draft.tuesday;
+                        edit => { root.remember-dated(); }
+                    }
+                    wednesday := WeekdayField {
+                        editable: !root.preview-ready; label: "Mi";
+                        initial: root.corrections ? "00:00" : root.dated-draft.wednesday;
+                        edit => { root.remember-dated(); }
+                    }
+                    thursday := WeekdayField {
+                        editable: !root.preview-ready; label: "Do";
+                        initial: root.corrections ? "00:00" : root.dated-draft.thursday;
+                        edit => { root.remember-dated(); }
+                    }
+                    friday := WeekdayField {
+                        editable: !root.preview-ready; label: "Fr";
+                        initial: root.corrections ? "00:00" : root.dated-draft.friday;
+                        edit => { root.remember-dated(); }
+                    }
+                    saturday := WeekdayField {
+                        editable: !root.preview-ready; label: "Sa";
+                        initial: root.corrections ? "00:00" : root.dated-draft.saturday;
+                        edit => { root.remember-dated(); }
+                    }
+                    sunday := WeekdayField {
+                        editable: !root.preview-ready; label: "So";
+                        initial: root.corrections ? "00:00" : root.dated-draft.sunday;
+                        edit => { root.remember-dated(); }
+                    }
                 }
                 HorizontalLayout {
                     spacing: 8px;
@@ -471,6 +611,8 @@ slint::slint! {
                         enabled: !root.preview-ready && kind.operation >= 2;
                         placeholder-text: "Begründung";
                         accessible-label: "Begründung";
+                        text: root.corrections ? "" : root.dated-draft.reason;
+                        edited => { root.remember-dated(); }
                         min-width: 90px;
                     }
                     entry := LineEdit {
@@ -481,14 +623,7 @@ slint::slint! {
                     }
                     ActionButton {
                         label: "Vorschau"; primary: true; enabled: !root.preview-ready;
-                        clicked => {
-                            root.preview-edit({
-                                kind: kind.operation, date: date-field.text, amount: amount.text,
-                                monday: monday.amount, tuesday: tuesday.amount, wednesday: wednesday.amount,
-                                thursday: thursday.amount, friday: friday.amount, saturday: saturday.amount,
-                                sunday: sunday.amount, reason: reason.text, entry-id: entry.text
-                            });
-                        }
+                        clicked => { root.preview-edit(root.fields()); }
                     }
                 }
                 if root.preview-ready: Card {
@@ -784,7 +919,8 @@ slint::slint! {
         width: 352px;
         height: 185px;
         in property <Overview> overview;
-        in-out property <bool> pinned: true;
+        in property <bool> pinned: true;
+        callback set-pin(bool);
         callback open-main;
         callback refresh;
 
@@ -814,7 +950,7 @@ slint::slint! {
                 ActionButton {
                     label: root.pinned ? "Angeheftet" : "Anheften";
                     nav: true; selected: root.pinned;
-                    clicked => { root.pinned = !root.pinned; }
+                    clicked => { root.set-pin(!root.pinned); }
                 }
                 ActionButton { label: "Hauptfenster"; nav: true; clicked => { root.open-main(); } }
                 ActionButton { label: "Neu laden"; nav: true; clicked => { root.refresh(); } }
@@ -833,6 +969,9 @@ slint::slint! {
 
         in property <int> page;
         in property <int> scheme;
+        in property <ScheduleInputs> schedule;
+        in property <EditFields> dated-draft;
+        in property <MiniOptions> mini-options;
         in property <int> range-index;
         in property <string> heading;
         in property <string> subheading;
@@ -857,10 +996,17 @@ slint::slint! {
         callback navigate(int);
         callback select-range(int);
         callback change-scheme(int);
+        callback edit-schedule(int, string);
+        callback change-mini-option(int, bool);
+        callback reset-mini-position;
+        callback native-minimized(bool);
+        callback mini-moved;
+        callback mini-closed;
         callback step-period(int);
         callback go-to-date(string);
         callback refresh();
         callback preview-edit(EditFields);
+        callback capture-dated(EditFields);
         callback confirm-edit();
         callback cancel-edit();
         callback export-to(string);
@@ -1005,6 +1151,12 @@ slint::slint! {
                             }
                             if root.page == 6: AccountSettings {
                                 scheme: root.scheme; date: root.report-date;
+                                schedule: root.schedule; mini-options: root.mini-options;
+                                dated-draft: root.dated-draft;
+                                capture-dated(fields) => { root.capture-dated(fields); }
+                                edit-schedule(index, value) => { root.edit-schedule(index, value); }
+                                change-mini-option(index, value) => { root.change-mini-option(index, value); }
+                                reset-mini-position => { root.reset-mini-position(); }
                                 settings: root.settings; history: root.history;
                                 preview-text: root.preview-text; preview-ready: root.preview-ready;
                                 change-scheme(index) => { root.change-scheme(index); }

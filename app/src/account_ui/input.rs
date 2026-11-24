@@ -104,6 +104,10 @@ pub(super) fn duration(value: Seconds, signed: bool) -> String {
     }
 }
 
+pub(super) fn parse_target(text: &str) -> Result<u32, String> {
+    parse_duration(text).and_then(nonnegative)
+}
+
 fn nonnegative(value: Seconds) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| "Das Soll muss eine gültige, nichtnegative Dauer sein.".into())
 }

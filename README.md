@@ -25,7 +25,11 @@ cargo run --locked -p projektzeit --features desktop-account -- --account-ui ./p
 
 The timezone argument is optional when the system IANA zone can be detected. On Linux, the desktop feature additionally needs a graphical session and Fontconfig development files (for example, `libfontconfig-dev` on Ubuntu).
 
-Open **Einstellungen**, enter a weekly schedule (the seven daily durations must add up to the weekly total), and set the opening balance and its effective date. Review each preview before saving. Use **Zeiterfassung** for daily, weekly, or monthly summaries, **Arbeitszeitkonto** for the monthly balance, and **Berichte & Export** to save an account-only XLSX to a new file. **Korrekturen** contains manual balance changes and their audit history. **Einstellungen** also supports system, light, and dark appearance. [Worktime-account rules and examples](docs/worktime-account.md)
+Open **Einstellungen** to configure the current working hours and the opening balance. Review the preview when setting a dated rule or opening balance. Use **Zeiterfassung** for daily, weekly, or monthly summaries, **Arbeitszeitkonto** for the monthly balance, and **Berichte & Export** to save an account-only XLSX to a new file. **Korrekturen** contains manual balance changes and their audit history. **Einstellungen** also supports system, light, and dark appearance. [Worktime-account rules and examples](docs/worktime-account.md)
+
+Under **Aktuelle Arbeitszeit**, a valid edit saves automatically and takes effect today. Changing the weekly total redistributes it across the existing working days. Changing a weekday updates the weekly sum. Use **Datierte Arbeitszeitregeln** with the preview for a future plan or an explicit historical correction.
+
+The mini-timer appears automatically when the main window is minimized by default. Restoring the main window closes an automatically opened timer. Its visibility preference, topmost preference, and last position are saved in the same SQLite database. On Windows the default position uses the main window's monitor work area with a 24-logical-pixel right and bottom margin. **Fensterposition zurücksetzen** restores that default.
 
 ## Checks
 
