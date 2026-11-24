@@ -10,7 +10,7 @@ mod view;
 
 use std::{cell::RefCell, ffi::OsStr, path::PathBuf, rc::Rc, time::SystemTime};
 
-use chrono::{DateTime, Datelike, Months, NaiveDate, TimeDelta};
+use chrono::{DateTime, Datelike, Months, NaiveDate, TimeDelta, Timelike};
 use chrono_tz::Tz;
 use projektzeit_core::{
     Timestamp,
@@ -23,7 +23,9 @@ use rusqlite::{Connection, OptionalExtension};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use input::{display_date, duration, parse_change, parse_date};
-use view::{AccountWindow, DayRow, EditFields, Metric};
+use view::{
+    AccountWindow, AdjustmentRow, ChartDay, DayRow, EditFields, Metric, MiniTimer, Overview,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(i32)]
@@ -31,7 +33,9 @@ enum Page {
     Today,
     Times,
     Projects,
+    Account,
     Reports,
+    Corrections,
     Settings,
     About,
 }
@@ -74,6 +78,7 @@ struct Controller {
     range: Range,
     pending: Option<Preview>,
     displayed_report: Option<(NaiveDate, Reports)>,
+    mini: Option<MiniTimer>,
 }
 
 pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
@@ -110,6 +115,7 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
         range: Range::default(),
         pending: None,
         displayed_report: None,
+        mini: None,
     }));
     connect(&window, &controller);
     controller.borrow_mut().render(&window)?;
@@ -124,13 +130,56 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
             0 => Page::Today,
             1 => Page::Times,
             2 => Page::Projects,
-            3 => Page::Reports,
-            4 => Page::Settings,
+            3 => Page::Account,
+            4 => Page::Reports,
+            5 => Page::Corrections,
+            6 => Page::Settings,
             _ => Page::About,
         };
         state.clear_preview(window);
         state.render(window)
     }));
+    let show_mini = action(window, controller, |state, window, ()| {
+        if state.mini.is_none() {
+            let mini = MiniTimer::new().map_err(|error| error.to_string())?;
+            let main = window.as_weak();
+            mini.on_open_main(move || {
+                if let Some(window) = main.upgrade() {
+                    let _ = window.show();
+                    window.window().set_minimized(false);
+                }
+            });
+            let main = window.as_weak();
+            mini.on_refresh(move || {
+                if let Some(window) = main.upgrade() {
+                    window.invoke_refresh_mini();
+                }
+            });
+            state.mini = Some(mini);
+        }
+        state.update_mini()?;
+        if let Some(mini) = &state.mini {
+            mini.show().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+    window.on_show_mini(move || show_mini(()));
+    let mini_refresh = {
+        let state = Rc::downgrade(controller);
+        move || {
+            if let Some(state) = state.upgrade() {
+                let mut state = state.borrow_mut();
+                if state
+                    .mini
+                    .as_ref()
+                    .is_some_and(|mini| mini.window().is_visible())
+                {
+                    let _ = state.update_mini();
+                }
+            }
+        }
+    };
+    window.on_refresh_mini(mini_refresh);
     window.on_select_range(action(window, controller, |state, window, index| {
         state.range = match index {
             0 => Range::Day,
@@ -236,7 +285,7 @@ impl Controller {
     fn report_range(&self) -> Range {
         match self.page {
             Page::Times => self.range,
-            Page::Reports => Range::Month,
+            Page::Account | Page::Reports => Range::Month,
             _ => Range::Week,
         }
     }
@@ -257,8 +306,15 @@ impl Controller {
         let observed_at = now();
         let today = local_date(observed_at, self.zone);
         match self.page {
-            Page::Settings => {
-                window.set_heading("Einstellungen".into());
+            Page::Settings | Page::Corrections => {
+                window.set_heading(
+                    if self.page == Page::Settings {
+                        "Einstellungen"
+                    } else {
+                        "Korrekturen & Anpassungen"
+                    }
+                    .into(),
+                );
                 window.set_report_date(display_date(today).into());
                 self.render_settings(window)
             }
@@ -271,7 +327,7 @@ impl Controller {
                 window.set_projects(model(dashboard::projects(&self.connection)?));
                 Ok(())
             }
-            Page::Today | Page::Times | Page::Reports => {
+            Page::Today | Page::Times | Page::Account | Page::Reports => {
                 self.render_report(window, today, observed_at)
             }
         }
@@ -291,10 +347,13 @@ impl Controller {
         let range = self.report_range();
         let period = range.period(selected).map_err(account_error)?;
         let (heading, subheading) = match self.page {
-            Page::Today => ("Heute", weekday_date(today)),
-            Page::Times if range == Range::Day => ("Zeiten", weekday_date(selected)),
+            Page::Today => (
+                greeting(observed_at.with_timezone(&self.zone).hour()),
+                weekday_date(today),
+            ),
+            Page::Times if range == Range::Day => ("Zeiterfassung", weekday_date(selected)),
             Page::Times if range == Range::Week => (
-                "Zeiten",
+                "Zeiterfassung",
                 format!(
                     "Kalenderwoche {} · {} – {}",
                     selected.iso_week().week(),
@@ -302,8 +361,9 @@ impl Controller {
                     display_date(period.end())
                 ),
             ),
-            Page::Times => ("Zeiten", month_year(selected)),
-            _ => ("Berichte", month_year(selected)),
+            Page::Times => ("Zeiterfassung", month_year(selected)),
+            Page::Account => ("Arbeitszeitkonto", month_year(selected)),
+            _ => ("Berichte & Export", month_year(selected)),
         };
         window.set_heading(heading.into());
         window.set_subheading(subheading.into());
@@ -314,17 +374,19 @@ impl Controller {
         } else {
             dashboard::Timeline::default()
         };
-        window.set_segments(model(timeline.rows));
         if self.page == Page::Today {
-            window.set_cards(model(today_cards(
-                timeline.work_seconds,
-                timeline.break_seconds,
-                None,
-            )));
-            window.set_progress(0.0);
-            window.set_progress_label("".into());
+            let calendar = self.dashboard_summary(today, observed_at, &timeline)?;
+            window.set_has_report(calendar.configured);
+            if !calendar.configured {
+                window.set_notice(
+                    "Startsaldo und Wochenplan unter Einstellungen hinterlegen.".into(),
+                );
+            }
+            window.set_overview(calendar);
+            window.set_segments(model(timeline.rows));
+            return Ok(());
         }
-
+        window.set_segments(model(timeline.rows));
         let as_of = selected.min(today);
         let reports = match account::report(&mut self.connection, period, as_of, today, observed_at)
         {
@@ -338,54 +400,12 @@ impl Controller {
             Err(error) => return Err(store_error(error)),
         };
         let report = &reports.period;
-        let (cards, mut metrics) = if self.page == Page::Today {
-            let target = report
-                .days
-                .iter()
-                .find(|day| day.date == today)
-                .and_then(|day| day.planned_target);
-            let target = target.map(i64::from);
-            let work = timeline.work_seconds;
-            window.set_progress(
-                target
-                    .filter(|&value| value > 0)
-                    .map_or(0.0, |value| (work as f32 / value as f32).min(1.0)),
-            );
-            window.set_progress_label(
-                target
-                    .map_or_else(String::new, |value| {
-                        format!("Tagessoll {}", duration(value, false))
-                    })
-                    .into(),
-            );
-            (
-                today_cards(work, timeline.break_seconds, target),
-                vec![metric(
-                    "Wochendifferenz bis heute",
-                    report.totals.delta,
-                    true,
-                )],
-            )
-        } else {
-            (
-                vec![
-                    metric("Ist netto", report.totals.actual, false),
-                    metric("Soll bis Stichtag", report.totals.target, false),
-                    metric("Differenz", report.totals.delta, true),
-                ],
-                vec![
-                    optional_metric("Anfangssaldo", report.opening_balance),
-                    metric("Volles Plansoll", report.full_planned_target, false),
-                    metric(
-                        "Verbleibendes Plansoll",
-                        report.remaining_planned_target,
-                        false,
-                    ),
-                    metric("Manuelle Korrekturen", report.totals.adjustments, true),
-                    optional_metric("Schlusssaldo bis Stichtag", report.closing_balance),
-                ],
-            )
-        };
+        let cards = vec![
+            metric("Ist netto", report.totals.actual, false),
+            metric("Soll bis Stichtag", report.totals.target, false),
+            metric("Differenz", report.totals.delta, true),
+        ];
+        let mut metrics = monthly_metrics(report);
         metrics.push(optional_metric(
             &format!("Gesamtsaldo am {}", display_date(as_of)),
             reports.balance_as_of,
@@ -437,6 +457,115 @@ impl Controller {
         Ok(())
     }
 
+    fn dashboard_summary(
+        &mut self,
+        today: NaiveDate,
+        observed_at: Timestamp,
+        timeline: &dashboard::Timeline,
+    ) -> Result<Overview, String> {
+        let week_period = Period::iso_week(today).map_err(account_error)?;
+        let month_period = Period::month(today).map_err(account_error)?;
+        let mut overview = Overview {
+            worked: duration(timeline.work_seconds, false).into(),
+            breaks: duration(timeline.break_seconds, false).into(),
+            project: timeline
+                .active_project
+                .clone()
+                .unwrap_or_else(|| "Kein laufendes Projekt".into())
+                .into(),
+            remaining: dash().into(),
+            finish: dash().into(),
+            progress_label: dash().into(),
+            week_title: format!("Woche {}", today.iso_week().week()).into(),
+            week_dates: format!(
+                "{} – {}",
+                display_date(week_period.start()),
+                display_date(week_period.end())
+            )
+            .into(),
+            month_title: format!("Monatsübersicht – {}", month_year(today)).into(),
+            ..Default::default()
+        };
+        let week =
+            match account::report(&mut self.connection, week_period, today, today, observed_at) {
+                Ok(report) => report,
+                Err(StoreError::Calculation(
+                    AccountError::MissingOpening | AccountError::MissingSchedule(_),
+                )) => return Ok(overview),
+                Err(error) => return Err(store_error(error)),
+            };
+        let month = match account::report(
+            &mut self.connection,
+            month_period,
+            today,
+            today,
+            observed_at,
+        ) {
+            Ok(report) => Some(report),
+            Err(StoreError::Calculation(AccountError::MissingSchedule(_))) => None,
+            Err(error) => return Err(store_error(error)),
+        };
+        overview.configured = true;
+        if week.balance_excludes_open_time {
+            overview.notice =
+                "Vorläufig · Offene Arbeitssegmente sind bis zur Klärung ausgenommen.".into();
+        } else {
+            overview.notice = format!("Vorläufig · Stand {}", display_date(today)).into();
+        }
+        if let Some(target) = week
+            .period
+            .days
+            .iter()
+            .find(|day| day.date == today)
+            .and_then(|day| day.planned_target)
+        {
+            let target = i64::from(target);
+            overview.daily_target = format!("Soll: {}", duration(target, false)).into();
+            overview.remaining = duration((target - timeline.work_seconds).max(0), false).into();
+            if target > 0 {
+                overview.progress = (timeline.work_seconds as f32 / target as f32).min(1.0);
+                overview.progress_label = format!("{:.0} %", overview.progress * 100.0).into();
+            }
+        }
+        overview.balances = model(vec![
+            metric("Diese Woche", week.period.totals.delta, true),
+            optional_metric(
+                "Dieser Monat",
+                month.as_ref().map(|month| month.period.totals.delta),
+            ),
+            optional_metric("Gesamtsaldo", week.balance_as_of),
+        ]);
+        overview.week = model(vec![
+            metric("Soll bis Stichtag", week.period.totals.target, false),
+            metric("Iststunden", week.period.totals.actual, false),
+            metric("Differenz", week.period.totals.delta, true),
+        ]);
+        overview.chart = model(chart_days(&week.period));
+        if let Some(month) = month {
+            let report = &month.period;
+            overview.month = model(vec![
+                optional_metric("Übertrag", report.opening_balance),
+                metric("Soll bis Stichtag", report.totals.target, false),
+                metric("Iststunden", report.totals.actual, false),
+                metric("Monatsdifferenz", report.totals.delta, true),
+                metric("Manuelle Korrekturen", report.totals.adjustments, true),
+                optional_metric("Neuer Gesamtsaldo", report.closing_balance),
+            ]);
+        }
+        Ok(overview)
+    }
+
+    fn update_mini(&mut self) -> Result<(), String> {
+        let observed_at = now();
+        let today = local_date(observed_at, self.zone);
+        let timeline = dashboard::timeline(&self.connection, today, observed_at)?;
+        let overview = self.dashboard_summary(today, observed_at, &timeline)?;
+        if let Some(mini) = &self.mini {
+            mini.set_overview(overview);
+        }
+        Ok(())
+    }
+
     fn render_settings(&mut self, window: &AccountWindow) -> Result<(), String> {
         let settings = account::settings(&mut self.connection).map_err(store_error)?;
         let opening = settings.opening.map_or_else(
@@ -475,6 +604,18 @@ impl Controller {
                 .into(),
             );
         }
+        let adjustments = settings
+            .adjustments
+            .iter()
+            .map(|entry| AdjustmentRow {
+                id: entry.id.to_string().into(),
+                date: display_date(entry.adjustment.effective_date).into(),
+                reason: entry.reason.clone().into(),
+                amount: duration(entry.adjustment.signed_seconds, true).into(),
+                voided: entry.voided,
+            })
+            .collect();
+        window.set_adjustments(model(adjustments));
         for entry in settings.adjustments {
             let status = if entry.voided { "storniert" } else { "aktiv" };
             lines.push(
@@ -492,6 +633,9 @@ impl Controller {
         let history = account::audit_history(&self.connection).map_err(store_error)?;
         let mut events = Vec::new();
         for event in history {
+            if self.page == Page::Corrections && event.entity != "adjustment" {
+                continue;
+            }
             let time = DateTime::from_timestamp_millis(event.occurred_at_utc_ms)
                 .map(|time| {
                     time.with_timezone(&self.zone)
@@ -712,17 +856,48 @@ fn month_year(date: NaiveDate) -> String {
     format!("{} {}", MONTHS[date.month0() as usize], date.year())
 }
 
-fn today_cards(work: Seconds, break_time: Seconds, target: Option<Seconds>) -> Vec<Metric> {
+fn greeting(hour: u32) -> &'static str {
+    match hour {
+        5..=11 => "Guten Morgen",
+        12..=17 => "Guten Tag",
+        _ => "Guten Abend",
+    }
+}
+
+fn monthly_metrics(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<Metric> {
     vec![
-        metric("Gearbeitet · netto", work, false),
-        Metric {
-            label: "Rest bis Tagessoll".into(),
-            value: target
-                .map_or_else(dash, |value| duration((value - work).max(0), false))
-                .into(),
-        },
-        metric("Pausen", break_time, false),
+        optional_metric("Anfangssaldo", report.opening_balance),
+        metric("Volles Plansoll", report.full_planned_target, false),
+        metric(
+            "Verbleibendes Plansoll",
+            report.remaining_planned_target,
+            false,
+        ),
+        metric("Manuelle Korrekturen", report.totals.adjustments, true),
+        optional_metric("Schlusssaldo bis Stichtag", report.closing_balance),
     ]
+}
+
+fn chart_days(report: &projektzeit_core::worktime_account::PeriodReport) -> Vec<ChartDay> {
+    let ceiling = report
+        .days
+        .iter()
+        .map(|day| {
+            i64::from(day.planned_target.unwrap_or_default())
+                .max(day.observed.map_or(0, |day| day.actual))
+        })
+        .max()
+        .unwrap_or_default()
+        .max(1);
+    report
+        .days
+        .iter()
+        .map(|day| ChartDay {
+            label: WEEKDAYS_SHORT[day.date.weekday().num_days_from_monday() as usize].into(),
+            target: day.planned_target.unwrap_or_default() as f32 / ceiling as f32,
+            actual: day.observed.map_or(0, |day| day.actual) as f32 / ceiling as f32,
+        })
+        .collect()
 }
 
 fn theme_error(error: rusqlite::Error) -> String {

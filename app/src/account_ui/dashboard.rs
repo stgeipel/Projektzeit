@@ -13,6 +13,7 @@ pub(super) struct Timeline {
     pub rows: Vec<SegmentRow>,
     pub work_seconds: i64,
     pub break_seconds: i64,
+    pub active_project: Option<String>,
 }
 
 pub(super) fn timeline(
@@ -70,6 +71,14 @@ pub(super) fn timeline(
             continue;
         }
         let mut add_row = |start: Timestamp, finish: Timestamp| {
+            if end.is_none() && !is_break {
+                let name = project.as_deref().unwrap_or("Ohne Projekt");
+                timeline.active_project = Some(
+                    activity
+                        .as_deref()
+                        .map_or_else(|| name.into(), |text| format!("{name} – {text}")),
+                );
+            }
             let elapsed = (finish - start).num_milliseconds();
             if end.is_some() {
                 if is_break {
@@ -106,6 +115,14 @@ pub(super) fn timeline(
                 title: label.into(),
                 detail: detail.into(),
                 time: time.into(),
+                begin: local_time(start).into(),
+                finish: if end.is_some() {
+                    local_time(finish)
+                } else {
+                    dash()
+                }
+                .into(),
+                pause: is_break,
                 amount: if end.is_some() {
                     duration(elapsed / 1000, false)
                 } else {
@@ -137,7 +154,7 @@ pub(super) fn timeline(
 pub(super) fn projects(db: &Connection) -> Result<Vec<ProjectRow>, String> {
     let mut statement = db
         .prepare(
-            "SELECT name, short_name, customer, archived_at_utc_ms IS NOT NULL
+            "SELECT name, short_name, customer, archived_at_utc_ms IS NOT NULL, color
          FROM projects ORDER BY archived_at_utc_ms IS NOT NULL, name COLLATE NOCASE, id",
         )
         .map_err(sql_error)?;
@@ -148,11 +165,29 @@ pub(super) fn projects(db: &Connection) -> Result<Vec<ProjectRow>, String> {
                 code: row.get::<_, Option<String>>(1)?.unwrap_or_default().into(),
                 customer: row.get::<_, Option<String>>(2)?.unwrap_or_else(dash).into(),
                 archived: row.get(3)?,
+                swatch: row
+                    .get::<_, Option<String>>(4)?
+                    .as_deref()
+                    .and_then(project_color)
+                    .unwrap_or_default(),
             })
         })
         .map_err(sql_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql_error)
+}
+
+fn project_color(text: &str) -> Option<slint::Color> {
+    let hex = text.trim().strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let rgb = u32::from_str_radix(hex, 16).ok()?;
+    Some(slint::Color::from_rgb_u8(
+        (rgb >> 16) as u8,
+        (rgb >> 8) as u8,
+        rgb as u8,
+    ))
 }
 
 fn sql_error(error: rusqlite::Error) -> String {

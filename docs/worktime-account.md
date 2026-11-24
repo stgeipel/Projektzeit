@@ -1,6 +1,6 @@
 # Worktime account
 
-The standalone Slint window uses the same SQLite file and work timeline as the tracker foundation. It shows today's daily timeline and balance, daily and ISO-week or calendar-month summaries under Zeiten, and the monthly worktime account under Berichte. Projects lists the active and archived projects stored in the database. The main tracker and its floating timer can consume the same report service when they are introduced. This window configures and reports existing time records. Recording live sessions and confirming recovery intervals belong to the tracker.
+The standalone Slint window uses the same SQLite file and work timeline as the tracker foundation. It shows today's daily timeline and balance, daily, ISO-week, and calendar-month summaries under Zeiterfassung, and the monthly balance under Arbeitszeitkonto. Berichte & Export can save the account report to XLSX. Projects lists the active and archived projects stored in the database. The pinnable mini-timer refreshes the read-only figures while it is visible. This window configures and reports existing time records. Recording live sessions and confirming recovery intervals belong to the tracker.
 
 ## Configuration and correction
 

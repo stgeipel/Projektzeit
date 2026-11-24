@@ -4,8 +4,20 @@ slint::slint! {
 
     export struct Metric { label: string, value: string }
     export struct DayRow { date: string, actual: string, target: string, delta: string }
-    export struct SegmentRow { title: string, detail: string, time: string, amount: string, pending: bool }
-    export struct ProjectRow { name: string, code: string, customer: string, archived: bool }
+    export struct SegmentRow {
+        title: string, detail: string, time: string, begin: string, finish: string,
+        amount: string, pending: bool, pause: bool,
+    }
+    export struct AdjustmentRow { id: string, date: string, reason: string, amount: string, voided: bool }
+    export struct ChartDay { label: string, actual: float, target: float }
+    export struct Overview {
+        configured: bool, worked: string, remaining: string, finish: string,
+        daily-target: string, progress-label: string, progress: float, breaks: string,
+        project: string, balances: [Metric], week: [Metric], month: [Metric],
+        chart: [ChartDay], week-title: string, week-dates: string, month-title: string,
+        notice: string,
+    }
+    export struct ProjectRow { name: string, code: string, customer: string, archived: bool, swatch: color }
     export struct EditFields {
         kind: int, date: string, amount: string,
         monday: string, tuesday: string, wednesday: string, thursday: string,
@@ -16,19 +28,22 @@ slint::slint! {
     global Theme {
         private property <color> system-background: Palette.background;
         out property <bool> dark: system-background.red < 128;
-        out property <color> canvas: dark ? #15231d : #f6f4eb;
-        out property <color> surface: dark ? #1d2d25 : #fffdf7;
-        out property <color> tint: dark ? #263d31 : #e8f0e4;
-        out property <color> border: dark ? #3b5145 : #d9dfd1;
-        out property <color> ink: dark ? #f2f5ed : #172d24;
-        out property <color> muted: dark ? #b2c4b8 : #4c6053;
-        out property <color> green: dark ? #9bd0a9 : #285c43;
-        out property <color> focus: dark ? #b8e9bf : #397352;
+        out property <color> canvas: dark ? #13251f : #f3f7fb;
+        out property <color> surface: dark ? #1b2f28 : #ffffff;
+        out property <color> tint: dark ? #253f33 : #ecfdf5;
+        out property <color> border: dark ? #3b5145 : #dbe5ed;
+        out property <color> ink: dark ? #f2f5ed : #0f172a;
+        out property <color> muted: dark ? #b2c4b8 : #46576a;
+        out property <color> green: dark ? #a0edc2 : #0e5a47;
+        out property <color> focus: dark ? #b8e9bf : #0e5a47;
         out property <color> warning: dark ? #f2cd91 : #764718;
-        out property <color> rail: #17362a;
-        out property <color> rail-active: #315d47;
+        out property <color> rail: #0B1f1a;
+        out property <color> rail-active: #0e774b;
         out property <color> rail-ink: #f3f9ed;
         out property <color> rail-muted: #bad1c0;
+        out property <color> chart: dark ? #34d399 : #0B9b57;
+        out property <color> track: dark ? #345747 : #dbe7ee;
+        out property <color> pause-tint: dark ? #43392a : #fff5dc;
         out property <color> hero: dark ? #234936 : #28563d;
         out property <color> on-hero: #f4faef;
         out property <color> on-action: dark ? #15231d : #ffffff;
@@ -41,7 +56,7 @@ slint::slint! {
 
     component SectionTitle inherits Text {
         color: Theme.ink;
-        font-size: 18px;
+        font-size: 16px;
         font-weight: 680;
     }
 
@@ -52,6 +67,17 @@ slint::slint! {
         border-radius: 12px;
     }
 
+    component LineIcon inherits Path {
+        in property <string> shape;
+        in property <color> ink: Theme.green;
+        commands: root.shape;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 1.8px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+    }
+
     component ActionButton inherits Rectangle {
         in property <string> label;
         in property <bool> primary;
@@ -59,9 +85,10 @@ slint::slint! {
         in property <bool> selected;
         in property <bool> align-left;
         in property <bool> enabled: true;
+        in property <string> icon;
         callback clicked;
 
-        min-width: caption.preferred-width + 28px;
+        min-width: caption.preferred-width + 28px + (root.icon == "" ? 0px : 26px);
         height: 38px;
         horizontal-stretch: root.align-left ? 1 : 0;
         border-radius: 7px;
@@ -81,9 +108,13 @@ slint::slint! {
         accessible-checked: root.selected;
         accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
+        if root.icon != "": LineIcon {
+            x: 13px; y: (parent.height - self.height)/2; width: 18px; height: 18px;
+            shape: root.icon; ink: Theme.rail-ink;
+        }
         caption := Text {
-            x: 14px;
-            width: parent.width - 28px;
+            x: root.icon == "" ? 14px : 39px;
+            width: parent.width - self.x - 14px;
             height: parent.height;
             text: root.label;
             color: !root.enabled ? Theme.muted : root.nav ? Theme.rail-ink
@@ -265,7 +296,7 @@ slint::slint! {
                         width: 5px;
                         height: 30px;
                         border-radius: 3px;
-                        background: project.archived ? Theme.muted : Theme.green;
+                        background: project.swatch.alpha > 0 ? project.swatch : project.archived ? Theme.muted : Theme.green;
                     }
                     VerticalLayout {
                         horizontal-stretch: 1;
@@ -285,22 +316,40 @@ slint::slint! {
         in property <int> page;
         in property <bool> compact;
         callback navigate(int);
-        property <[string]> links: ["Heute", "Zeiten", "Projekte", "Berichte", "Einstellungen"];
+        property <[string]> links: ["Dashboard", "Zeiterfassung", "Projekte", "Arbeitszeitkonto",
+            "Berichte & Export", "Korrekturen", "Einstellungen"];
+        property <[string]> icons: [
+            "M3 11 L12 3 L21 11 M5 10 V21 H10 V15 H14 V21 H19 V10",
+            "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 M10 8 L16 12 L10 16 Z",
+            "M3 7 L12 3 L21 7 L12 11 Z M3 12 L12 16 L21 12 M3 17 L12 21 L21 17",
+            "M4 20 V13 H7 V20 Z M10 20 V9 H13 V20 Z M16 20 V4 H19 V20 Z",
+            "M6 3 H15 L19 7 V21 H6 Z M15 3 V8 H19 M9 12 H16 M9 15 H16",
+            "M4 20 L8 19 L20 7 L17 4 L5 16 Z M14 7 L17 10",
+            "M12 3 L14 6 L17 5 L19 7 L18 10 L21 12 L18 14 L19 17 L17 19 L14 18 L12 21 L10 18 L7 19 L5 17 L6 14 L3 12 L6 10 L5 7 L7 5 L10 6 Z M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9",
+        ];
+        property <[string]> short-links: ["Dashboard", "Zeiten", "Projekte", "Zeitkonto", "Berichte", "Korrekturen", "Einstellungen"];
         background: Theme.rail;
 
         if !root.compact: VerticalLayout {
             padding: 18px;
             spacing: 7px;
-            Label { text: "Projektzeit"; color: Theme.rail-ink; font-size: 25px; font-weight: 720; }
+            HorizontalLayout {
+                spacing: 9px;
+                LineIcon {
+                    width: 29px; height: 29px; ink: #34d399;
+                    shape: "M12 5 A8 8 0 1 0 12 21 A8 8 0 1 0 12 5 M9 2 H15 M12 2 V5 M17 6 L19 4 M12 9 V14";
+                }
+                Label { text: "Projektzeit"; color: Theme.rail-ink; font-size: 22px; font-weight: 720; vertical-alignment: center; }
+            }
             Rectangle { height: 12px; }
             for link[index] in root.links: ActionButton {
-                label: link; nav: true; align-left: true; selected: index == root.page;
+                label: link; nav: true; align-left: true; selected: index == root.page; icon: root.icons[index];
                 clicked => { root.navigate(index); }
             }
             Rectangle { vertical-stretch: 1; }
             ActionButton {
-                label: "Über Projektzeit"; nav: true; align-left: true; selected: root.page == 5;
-                clicked => { root.navigate(5); }
+                label: "Über Projektzeit"; nav: true; align-left: true; selected: root.page == 7;
+                clicked => { root.navigate(7); }
             }
         }
         if root.compact: VerticalLayout {
@@ -309,14 +358,22 @@ slint::slint! {
             HorizontalLayout {
                 Label { text: "Projektzeit"; color: Theme.rail-ink; font-size: 19px; font-weight: 700; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
-                ActionButton { label: "Über"; nav: true; selected: root.page == 5; clicked => { root.navigate(5); } }
+                ActionButton { label: "Über"; nav: true; selected: root.page == 7; clicked => { root.navigate(7); } }
             }
             HorizontalLayout {
                 spacing: 2px;
-                for link[index] in root.links: ActionButton {
-                    label: link; nav: true; selected: index == root.page;
+                for index in 4: ActionButton {
+                    label: root.short-links[index]; nav: true; selected: index == root.page;
                     horizontal-stretch: 1;
                     clicked => { root.navigate(index); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 2px;
+                for index in 3: ActionButton {
+                    label: root.short-links[index + 4]; nav: true; selected: index + 4 == root.page;
+                    horizontal-stretch: 1;
+                    clicked => { root.navigate(index + 4); }
                 }
             }
         }
@@ -336,6 +393,8 @@ slint::slint! {
 
     component AccountSettings inherits VerticalLayout {
         in property <int> scheme;
+        in property <bool> corrections;
+        in property <[AdjustmentRow]> adjustments;
         in property <string> date;
         in property <[string]> settings;
         in property <[string]> history;
@@ -348,7 +407,7 @@ slint::slint! {
         spacing: 14px;
         alignment: start;
 
-        Card {
+        if !root.corrections: Card {
             HorizontalLayout {
                 padding: 16px;
                 spacing: 12px;
@@ -368,10 +427,12 @@ slint::slint! {
             VerticalLayout {
                 padding: 16px;
                 spacing: 10px;
-                SectionTitle { text: "Arbeitszeitkonto"; }
+                SectionTitle { text: root.corrections ? "Korrektur erfassen" : "Arbeitszeit"; }
                 kind := ComboBox {
-                    model: ["Wochenplan", "Startsaldo", "Tagessoll setzen", "Tagessoll zurücksetzen",
-                            "Korrektur hinzufügen", "Korrektur bearbeiten", "Korrektur stornieren"];
+                    property <int> operation: self.current-index + (root.corrections ? 4 : 0);
+                    model: root.corrections
+                        ? ["Neue Korrektur", "Korrektur bearbeiten", "Korrektur stornieren"]
+                        : ["Wochenplan", "Startsaldo", "Tagessoll setzen", "Tagessoll zurücksetzen"];
                     current-index: 0;
                     accessible-label: "Art der Änderung";
                     enabled: !root.preview-ready;
@@ -379,22 +440,22 @@ slint::slint! {
                 HorizontalLayout {
                     spacing: 8px;
                     date-field := LineEdit {
-                        enabled: !root.preview-ready && kind.current-index != 6;
+                        enabled: !root.preview-ready && kind.operation != 6;
                         placeholder-text: "Gültig ab (TT.MM.JJJJ)";
                         accessible-label: "Gültig ab";
                         text: root.date;
                         min-width: 105px;
                     }
                     amount := LineEdit {
-                        enabled: !root.preview-ready && kind.current-index != 3 && kind.current-index != 6;
-                        placeholder-text: kind.current-index == 0 ? "Wochensoll (hh:mm)" : "Dauer (±hh:mm)";
+                        enabled: !root.preview-ready && kind.operation != 3 && kind.operation != 6;
+                        placeholder-text: kind.operation == 0 ? "Wochensoll (hh:mm)" : "Dauer (±hh:mm)";
                         accessible-label: "Dauer";
                         min-width: 110px;
                     }
                 }
                 HorizontalLayout {
-                    visible: kind.current-index == 0;
-                    height: kind.current-index == 0 ? self.preferred-height : 0px;
+                    visible: kind.operation == 0;
+                    height: kind.operation == 0 ? self.preferred-height : 0px;
                     spacing: 5px;
                     monday := WeekdayField { editable: !root.preview-ready; label: "Mo"; }
                     tuesday := WeekdayField { editable: !root.preview-ready; label: "Di"; }
@@ -407,13 +468,13 @@ slint::slint! {
                 HorizontalLayout {
                     spacing: 8px;
                     reason := LineEdit {
-                        enabled: !root.preview-ready && kind.current-index >= 2;
+                        enabled: !root.preview-ready && kind.operation >= 2;
                         placeholder-text: "Begründung";
                         accessible-label: "Begründung";
                         min-width: 90px;
                     }
                     entry := LineEdit {
-                        enabled: !root.preview-ready && kind.current-index >= 5;
+                        enabled: !root.preview-ready && kind.operation >= 5;
                         placeholder-text: "Korrektur-Nr.";
                         accessible-label: "Korrektur-Nr.";
                         min-width: 90px;
@@ -422,7 +483,7 @@ slint::slint! {
                         label: "Vorschau"; primary: true; enabled: !root.preview-ready;
                         clicked => {
                             root.preview-edit({
-                                kind: kind.current-index, date: date-field.text, amount: amount.text,
+                                kind: kind.operation, date: date-field.text, amount: amount.text,
                                 monday: monday.amount, tuesday: tuesday.amount, wednesday: wednesday.amount,
                                 thursday: thursday.amount, friday: friday.amount, saturday: saturday.amount,
                                 sunday: sunday.amount, reason: reason.text, entry-id: entry.text
@@ -446,7 +507,22 @@ slint::slint! {
             }
         }
 
-        Card {
+        if root.corrections: Card {
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                SectionTitle { text: "Gespeicherte Korrekturen"; }
+                if root.adjustments.length == 0: Label { text: "Noch keine Korrekturen erfasst."; }
+                for adjustment in root.adjustments: HorizontalLayout {
+                    spacing: 12px;
+                    Label { text: "#" + adjustment.id; }
+                    Label { text: adjustment.date; }
+                    Label { text: adjustment.reason; wrap: word-wrap; horizontal-stretch: 1; }
+                    Label { text: adjustment.voided ? "Storniert" : adjustment.amount; }
+                }
+            }
+        }
+        if !root.corrections: Card {
             VerticalLayout {
                 padding: 16px;
                 spacing: 9px;
@@ -460,6 +536,288 @@ slint::slint! {
                 spacing: 9px;
                 SectionTitle { text: "Änderungsverlauf"; }
                 for item in root.history: Label { text: item; wrap: word-wrap; }
+            }
+        }
+    }
+
+    component ProgressTrack inherits Rectangle {
+        in property <float> progress;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.tint;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.progress;
+            height: parent.height;
+            border-radius: 5px;
+            background: Theme.chart;
+        }
+    }
+
+    component DashboardValue inherits VerticalLayout {
+        in property <string> label;
+        in property <string> value;
+        in property <string> detail;
+        horizontal-stretch: 1;
+        alignment: start;
+        spacing: 4px;
+        Label { text: root.label; color: Theme.ink; font-weight: 650; font-size: 13px; wrap: word-wrap; }
+        Text { text: root.value; color: Theme.ink; font-weight: 730; font-size: 23px; }
+        if root.detail != "": Label { text: root.detail; font-size: 12px; }
+    }
+
+    component DashboardNumbers inherits Card {
+        in property <Overview> data;
+        HorizontalLayout {
+            padding: 14px;
+            spacing: 14px;
+            VerticalLayout {
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    DashboardValue { label: "Arbeitszeit heute"; value: root.data.worked; detail: root.data.daily-target; }
+                    Rectangle { width: 1px; background: Theme.border; }
+                    DashboardValue { label: "Noch zu arbeiten"; value: root.data.remaining; }
+                    Rectangle { width: 1px; background: Theme.border; }
+                    DashboardValue { label: "Vorauss. Feierabend"; value: root.data.finish; }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: stretch;
+                    ProgressTrack { progress: root.data.progress; horizontal-stretch: 1; }
+                    Label { text: root.data.progress-label; vertical-alignment: center; horizontal-stretch: 0; }
+                }
+            }
+        }
+    }
+
+
+    component CurrentProject inherits Card {
+        in property <Overview> data;
+        VerticalLayout {
+            alignment: start;
+            padding: 14px;
+            spacing: 8px;
+            SectionTitle { text: "Aktuelles Projekt"; }
+            Label { text: root.data.project; color: Theme.ink; font-size: 13px; wrap: word-wrap; }
+            Label { text: "Pausen heute: " + root.data.breaks; font-size: 12px; }
+        }
+    }
+
+    component AccountOverview inherits Card {
+        in property <[Metric]> values;
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            alignment: start;
+            SectionTitle { text: "Arbeitszeitkonto – Überblick"; }
+            if root.values.length == 0: Label { text: "Noch kein Arbeitszeitkonto eingerichtet."; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 7px;
+                for metric in root.values: Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.tint;
+                    border-radius: 7px;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 4px;
+                        Label { text: metric.label; color: Theme.ink; font-size: 12px; wrap: word-wrap; }
+                        Text { text: metric.value; color: Theme.green; font-weight: 730; font-size: 18px; }
+                    }
+                }
+            }
+        }
+    }
+
+    component WeekCard inherits Card {
+        in property <Overview> data;
+        VerticalLayout {
+            padding: 14px;
+            spacing: 7px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                SectionTitle { text: root.data.week-title; }
+                Label { text: root.data.week-dates; font-size: 12px; vertical-alignment: center; }
+            }
+            if root.data.week.length == 0: Label { text: "Noch keine Wochenwerte."; }
+            if root.data.week.length > 0: HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+                    spacing: 5px;
+                    for metric in root.data.week: HorizontalLayout {
+                        spacing: 5px;
+                        Label { text: metric.label; font-size: 12px; horizontal-stretch: 1; }
+                        Text { text: metric.value; color: Theme.ink; font-size: 13px; font-weight: 700; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 5px;
+                        for day in root.data.chart: VerticalLayout {
+                            spacing: 3px;
+                            Rectangle {
+                                width: 13px;
+                                height: 49px;
+                                Rectangle {
+                                    y: parent.height - self.height;
+                                    height: parent.height * day.target;
+                                    background: Theme.track;
+                                    border-radius: 2px;
+                                }
+                                Rectangle {
+                                    width: parent.width - 4px;
+                                    y: parent.height - self.height;
+                                    height: parent.height * day.actual;
+                                    background: Theme.chart;
+                                    border-radius: 2px;
+                                }
+                            }
+                            Label { text: day.label; font-size: 10px; horizontal-alignment: center; }
+                        }
+                    }
+                    Label { text: "Ist (grün) · Soll"; font-size: 11px; horizontal-alignment: center; }
+                }
+            }
+        }
+    }
+
+    component DashboardEntry inherits Rectangle {
+        in property <SegmentRow> entry;
+        in property <bool> header;
+        height: header ? 28px : 33px;
+        background: header ? Theme.canvas : entry.pause ? Theme.pause-tint : Theme.surface;
+        border-radius: 4px;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 7px;
+            Text {
+                text: root.entry.title; color: Theme.ink; font-size: 12px; font-weight: root.header ? 730 : 600;
+                min-width: 74px; preferred-width: 124px; overflow: elide; vertical-alignment: center;
+            }
+            Text {
+                text: root.entry.detail; color: root.entry.pending ? Theme.warning : Theme.ink; font-size: 12px;
+                min-width: 84px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center;
+                accessible-description: root.entry.detail;
+            }
+            for value in [root.entry.begin, root.entry.finish, root.entry.amount]: Text {
+                text: value; color: Theme.ink; font-size: 12px; min-width: 42px;
+                vertical-alignment: center; horizontal-alignment: right;
+            }
+        }
+    }
+
+    component DashboardTimeline inherits Card {
+        in property <[SegmentRow]> segments;
+        VerticalLayout {
+            padding: 13px;
+            spacing: 5px;
+            alignment: start;
+            SectionTitle { text: "Heutige Zeiterfassung"; }
+            if root.segments.length == 0: Label { text: "Heute sind noch keine Zeiten erfasst."; }
+            if root.segments.length > 0: DashboardEntry {
+                header: true;
+                entry: { title: "Projekt", detail: "Tätigkeit", begin: "Beginn", finish: "Ende", amount: "Dauer" };
+            }
+            for segment in root.segments: DashboardEntry { entry: segment; }
+        }
+    }
+
+
+    component DashboardBody inherits VerticalLayout {
+        in property <Overview> data;
+        in property <[SegmentRow]> segments;
+        in property <bool> stacked;
+        callback navigate(int);
+        callback show-mini;
+        spacing: 12px;
+        alignment: start;
+
+        HorizontalLayout {
+            spacing: 12px;
+            DashboardNumbers { data: root.data; horizontal-stretch: 3; }
+            if !root.stacked: CurrentProject { data: root.data; horizontal-stretch: 1; min-width: 174px; }
+        }
+        if root.stacked: CurrentProject { data: root.data; }
+        if root.data.notice != "": Label { text: root.data.notice; font-size: 12px; wrap: word-wrap; }
+
+        if !root.stacked: HorizontalLayout {
+            spacing: 12px;
+            AccountOverview { values: root.data.balances; horizontal-stretch: 1; }
+            WeekCard { data: root.data; horizontal-stretch: 1; }
+        }
+        if root.stacked: AccountOverview { values: root.data.balances; }
+        if root.stacked: WeekCard { data: root.data; }
+
+        if !root.stacked: HorizontalLayout {
+            spacing: 12px;
+            DashboardTimeline { segments: root.segments; horizontal-stretch: 3; }
+            BalancePanel { metrics: root.data.month; heading: root.data.month-title; horizontal-stretch: 2; max-width: 348px; }
+        }
+        if root.stacked: DashboardTimeline { segments: root.segments; }
+        if root.stacked: BalancePanel { metrics: root.data.month; heading: root.data.month-title; }
+
+        Card {
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                SectionTitle { text: "Schnellaktionen"; }
+                HorizontalLayout {
+                    spacing: 7px;
+                    ActionButton { label: "Mini-Timer"; primary: true; clicked => { root.show-mini(); } }
+                    ActionButton { label: "Zeiten ansehen"; clicked => { root.navigate(1); } }
+                    ActionButton { label: "Korrektur anlegen"; clicked => { root.navigate(5); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+
+    export component MiniTimer inherits Window {
+        title: "Projektzeit – Mini-Timer";
+        background: Theme.rail;
+        always-on-top: root.pinned;
+        width: 352px;
+        height: 185px;
+        in property <Overview> overview;
+        in-out property <bool> pinned: true;
+        callback open-main;
+        callback refresh;
+
+        Timer {
+            interval: 30000ms;
+            triggered => { root.refresh(); }
+        }
+        VerticalLayout {
+            padding: 13px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 4px;
+                for metric in [
+                    { label: "Heute", value: root.overview.worked },
+                    { label: "Noch", value: root.overview.remaining },
+                    { label: "Feierabend", value: root.overview.finish }
+                ]: VerticalLayout {
+                    spacing: 5px;
+                    Label { text: metric.label; color: Theme.rail-muted; font-size: 12px; }
+                    Text { text: metric.value; color: Theme.rail-ink; font-weight: 720; font-size: 19px; }
+                }
+            }
+            ProgressTrack { progress: root.overview.progress; background: #174b3d; }
+            Label { text: root.overview.project; color: Theme.rail-ink; font-size: 13px; }
+            HorizontalLayout {
+                spacing: 6px;
+                ActionButton {
+                    label: root.pinned ? "Angeheftet" : "Anheften";
+                    nav: true; selected: root.pinned;
+                    clicked => { root.pinned = !root.pinned; }
+                }
+                ActionButton { label: "Hauptfenster"; nav: true; clicked => { root.open-main(); } }
+                ActionButton { label: "Neu laden"; nav: true; clicked => { root.refresh(); } }
             }
         }
     }
@@ -482,8 +840,8 @@ slint::slint! {
         in property <string> feedback;
         in property <string> report-date;
         in property <bool> has-report;
-        in property <float> progress;
-        in property <string> progress-label;
+        in property <Overview> overview;
+        in property <[AdjustmentRow]> adjustments;
         in property <[Metric]> cards;
         in property <[Metric]> metrics;
         in property <[DayRow]> rows;
@@ -506,6 +864,8 @@ slint::slint! {
         callback confirm-edit();
         callback cancel-edit();
         callback export-to(string);
+        callback show-mini;
+        callback refresh-mini;
 
         function apply-scheme() {
             Palette.color-scheme = root.scheme == 1 ? ColorScheme.light
@@ -525,27 +885,28 @@ slint::slint! {
             }
             HorizontalLayout {
                 if !root.compact: PageNav {
-                    width: 190px;
+                    width: 200px;
                     page: root.page;
                     navigate(index) => { root.navigate(index); }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;
-                    padding: root.compact ? 14px : 28px;
+                    padding: root.compact ? 14px : 24px;
                     spacing: 16px;
                     HorizontalLayout {
                         spacing: 10px;
                         VerticalLayout {
                             spacing: 3px;
-                            Text { text: root.heading; color: Theme.ink; font-size: 31px; font-weight: 720; }
-                            if root.subheading != "": Label { text: root.subheading; wrap: word-wrap; }
+                            if root.page == 0: Label { text: root.subheading; font-size: 12px; }
+                            Text { text: root.heading; color: Theme.ink; font-size: 28px; font-weight: 720; }
+                            if root.page != 0 && root.subheading != "": Label { text: root.subheading; wrap: word-wrap; }
                         }
                         Rectangle { horizontal-stretch: 1; }
-                        if root.page < 4: ActionButton { label: "Aktualisieren"; clicked => { root.refresh(); } }
+                        if root.page < 5: ActionButton { label: "Aktualisieren"; clicked => { root.refresh(); } }
                     }
                     if root.feedback != "": Label { text: root.feedback; color: Theme.green; wrap: word-wrap; }
 
-                    if root.page == 1 || root.page == 3: VerticalLayout {
+                    if root.page == 1 || root.page == 3 || root.page == 4: VerticalLayout {
                         spacing: 8px;
                         if root.page == 1: HorizontalLayout {
                             spacing: 6px;
@@ -578,14 +939,19 @@ slint::slint! {
                             alignment: start;
                             spacing: 14px;
 
-                            if root.page == 0 || ((root.page == 1 || root.page == 3) && root.has-report): StatCards {
+                            if root.page == 0: DashboardBody {
+                                data: root.overview;
+                                segments: root.segments;
+                                stacked: root.compact;
+                                navigate(index) => { root.navigate(index); }
+                                show-mini => { root.show-mini(); }
+                            }
+                            if (root.page == 1 || root.page == 3 || root.page == 4) && root.has-report: StatCards {
                                 items: root.cards;
                                 narrow: root.narrow;
-                                progress: root.page == 0 ? root.progress : 0.0;
-                                progress-label: root.page == 0 ? root.progress-label : "";
                             }
 
-                            if !root.has-report && (root.page == 0 || root.page == 1 || root.page == 3): Card {
+                            if !root.has-report && (root.page == 0 || root.page == 1 || root.page == 3 || root.page == 4): Card {
                                 background: Theme.tint;
                                 VerticalLayout {
                                     padding: 16px;
@@ -593,20 +959,12 @@ slint::slint! {
                                     SectionTitle { text: "Arbeitszeitkonto einrichten"; }
                                     Label { text: root.notice; wrap: word-wrap; }
                                     HorizontalLayout {
-                                        ActionButton { label: "Einstellungen öffnen"; primary: true; clicked => { root.navigate(4); } }
+                                        ActionButton { label: "Einstellungen öffnen"; primary: true; clicked => { root.navigate(6); } }
                                         Rectangle { horizontal-stretch: 1; }
                                     }
                                 }
                             }
                             if root.has-report && root.notice != "": Label { text: root.notice; wrap: word-wrap; }
-
-                            if root.page == 0 && root.has-report && !root.compact: HorizontalLayout {
-                                spacing: 14px;
-                                TimelinePanel { segments: root.segments; heading: "Tagesverlauf"; horizontal-stretch: 3; }
-                                BalancePanel { metrics: root.metrics; heading: "Arbeitszeitkonto"; horizontal-stretch: 2; min-width: 260px; }
-                            }
-                            if root.page == 0 && (!root.has-report || root.compact): TimelinePanel { segments: root.segments; heading: "Tagesverlauf"; }
-                            if root.page == 0 && root.has-report && root.compact: BalancePanel { metrics: root.metrics; heading: "Arbeitszeitkonto"; }
 
                             if root.page == 1 && root.range-index == 0: TimelinePanel { segments: root.segments; heading: "Tagesverlauf"; }
                             if root.page == 1 && root.rows.length > 0: Card {
@@ -617,11 +975,11 @@ slint::slint! {
                                     for day in root.rows: DayLine { day: day; }
                                 }
                             }
-                            if root.has-report && (root.page == 1 || root.page == 3): BalancePanel {
+                            if root.has-report && (root.page == 1 || root.page == 3 || root.page == 4): BalancePanel {
                                 metrics: root.metrics;
                                 heading: root.page == 1 ? "Zeitraumsaldo" : "Arbeitszeitkonto";
                             }
-                            if root.has-report && (root.page == 1 || root.page == 3): Card {
+                            if root.has-report && (root.page == 1 || root.page == 3 || root.page == 4): Card {
                                 HorizontalLayout {
                                     padding: 14px;
                                     spacing: 8px;
@@ -635,7 +993,17 @@ slint::slint! {
                             }
 
                             if root.page == 2: ProjectList { projects: root.projects; }
-                            if root.page == 4: AccountSettings {
+                            if root.page == 5: AccountSettings {
+                                date: root.report-date;
+                                corrections: true;
+                                adjustments: root.adjustments;
+                                history: root.history;
+                                preview-text: root.preview-text; preview-ready: root.preview-ready;
+                                preview-edit(fields) => { root.preview-edit(fields); }
+                                confirm-edit => { root.confirm-edit(); }
+                                cancel-edit => { root.cancel-edit(); }
+                            }
+                            if root.page == 6: AccountSettings {
                                 scheme: root.scheme; date: root.report-date;
                                 settings: root.settings; history: root.history;
                                 preview-text: root.preview-text; preview-ready: root.preview-ready;
@@ -644,7 +1012,7 @@ slint::slint! {
                                 confirm-edit => { root.confirm-edit(); }
                                 cancel-edit => { root.cancel-edit(); }
                             }
-                            if root.page == 5: Card {
+                            if root.page == 7: Card {
                                 VerticalLayout { padding: 18px; AboutSlint {} }
                             }
                         }
