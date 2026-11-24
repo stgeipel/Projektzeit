@@ -1315,6 +1315,7 @@ slint::slint! {
         callback change-mini-option(int, bool);
         callback reset-mini-position;
         callback native-minimized(bool);
+        callback native-clock-interrupted;
         callback mini-moved;
         callback mini-closed;
         callback step-period(int);

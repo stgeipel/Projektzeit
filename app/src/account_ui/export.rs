@@ -132,7 +132,9 @@ fn time_workbook(rows: &[Slice]) -> Result<Vec<u8>, XlsxError> {
             )?;
         }
         sheet.write_string(row, 8, slice.entry.zone.name())?;
-        let status = if !slice.counted {
+        let status = if slice.uncertain && slice.counted {
+            "Bis Speicherpunkt · Unbestätigt"
+        } else if !slice.counted {
             "Unbestätigt"
         } else if slice.entry.end.is_none() {
             "Laufend · Momentaufnahme"

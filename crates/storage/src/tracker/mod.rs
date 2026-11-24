@@ -7,7 +7,7 @@ pub use entries::{
 
 use std::fmt;
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, TimeDelta};
 use chrono_tz::Tz;
 use projektzeit_core::Timestamp;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -254,23 +254,71 @@ pub fn day_finished(db: &Connection, date: NaiveDate) -> Result<bool, Error> {
     })
 }
 
-/// Mark a closed, manually recorded local workday as complete.
+/// The end is exclusive. A workday ending exactly at midnight closes the
+/// date on which the last booked millisecond occurred.
+pub(crate) fn finished_date(zone: Tz, start: i64, end: i64) -> Result<NaiveDate, Error> {
+    Ok(timestamp(end.saturating_sub(1).max(start))?
+        .with_timezone(&zone)
+        .date_naive())
+}
+
+/// Mark closed, manually recorded work through the end of the current local day complete.
 pub fn finalize_manual_day(db: &mut Connection, zone: Tz, at: Timestamp) -> Result<(), Error> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if active(&tx)?.is_some() {
         return Err(Error::InvalidTransition);
     }
-    let date = at.with_timezone(&zone).date_naive().to_string();
-    if tx.execute(
-        "UPDATE workdays SET finalized=1 WHERE local_date=?1 AND timezone=?2
-         AND ended_at_utc_ms IS NOT NULL AND ended_at_utc_ms <= ?3 AND finalized=0",
-        params![date, zone.name(), at.timestamp_millis()],
-    )? == 0
-    {
+    let date = at.with_timezone(&zone).date_naive();
+    let ids = unfinished_manual_days(&tx, date, at)?;
+    if ids.is_empty() {
         return Err(Error::Missing);
+    }
+    for day in ids {
+        tx.execute("UPDATE workdays SET finalized=1 WHERE id=?1", [day])?;
     }
     tx.commit()?;
     Ok(())
+}
+
+pub fn can_finalize_manual_day(
+    db: &Connection,
+    date: NaiveDate,
+    at: Timestamp,
+) -> Result<bool, Error> {
+    Ok(!unfinished_manual_days(db, date, at)?.is_empty())
+}
+
+fn unfinished_manual_days(
+    db: &Connection,
+    date: NaiveDate,
+    at: Timestamp,
+) -> Result<Vec<i64>, Error> {
+    let lower = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is representable")
+        .and_utc()
+        .checked_sub_signed(TimeDelta::days(1))
+        .ok_or(Error::InvalidRange)?;
+    let mut statement = db.prepare(
+        "SELECT id, timezone, started_at_utc_ms, ended_at_utc_ms FROM workdays
+         WHERE finalized=0 AND ended_at_utc_ms BETWEEN ?1 AND ?2",
+    )?;
+    let rows = statement.query_map([lower.timestamp_millis(), at.timestamp_millis()], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, zone, start, end) = row?;
+        if finished_date(zone.parse().map_err(|_| Error::InvalidData)?, start, end)? == date {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 pub fn start(
@@ -335,6 +383,9 @@ pub fn transition(
     let session = active(&tx)?
         .filter(|session| session.entry_id == expected)
         .ok_or(Error::InvalidTransition)?;
+    if at < session.checkpoint {
+        return Err(Error::InvalidRange);
+    }
     let next = match (session.kind, command) {
         (Kind::Work, Command::Switch(project)) => Some((Kind::Work, project)),
         (Kind::Work, Command::Pause) => Some((Kind::Break, None)),
@@ -364,7 +415,7 @@ pub fn recover(
     let session = active(&tx)?
         .filter(|session| session.entry_id == expected)
         .ok_or(Error::InvalidTransition)?;
-    if at < session.checkpoint {
+    if !matches!(recovery, Recovery::FinishAtCheckpoint) && at < session.checkpoint {
         return Err(Error::InvalidRange);
     }
     let pending = match recovery {

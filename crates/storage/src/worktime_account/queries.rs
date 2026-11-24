@@ -148,10 +148,9 @@ pub(super) fn observations(
     let mut statement = db.prepare(
         "SELECT entry.id, day.timezone, entry.started_at_utc_ms, entry.ended_at_utc_ms
          FROM timeline_entries AS entry JOIN workdays AS day ON day.id = entry.workday_id
-         WHERE entry.kind = 'work' AND entry.started_at_utc_ms <= ?1
-         ORDER BY entry.started_at_utc_ms",
+         WHERE entry.kind = 'work' ORDER BY entry.started_at_utc_ms",
     )?;
-    let rows = statement.query_map([observed_at.timestamp_millis()], |row| {
+    let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -160,6 +159,7 @@ pub(super) fn observations(
         ))
     })?;
     let mut entries = Vec::new();
+    let mut cutoff = observed_at;
     for row in rows {
         let (id, zone, start, end) = row?;
         let zone: Tz = zone
@@ -168,9 +168,19 @@ pub(super) fn observations(
         let start = parse_timestamp(start)?;
         let end = match end {
             Some(end) => parse_timestamp(end)?,
-            None if trusted_entry == Some(id) => observed_at,
-            None => continue,
+            None => {
+                let Some(session) = active.as_ref().filter(|session| session.entry_id == id) else {
+                    continue;
+                };
+                if trusted_entry == Some(id) {
+                    observed_at.max(session.checkpoint)
+                } else {
+                    session.checkpoint
+                }
+            }
         };
+        // A clock rollback cannot shorten an already committed booking or checkpoint.
+        cutoff = cutoff.max(end);
         let span = TimeSpan::new(start, Some(end))
             .map_err(|_| StoreError::InvalidStoredValue("ended_at_utc_ms"))?;
         entries.push((
@@ -178,10 +188,7 @@ pub(super) fn observations(
             TimelineEntry::Work(WorkSegment::new(span, None, None)),
         ));
     }
-    let actual = attribute_work(
-        entries.iter().map(|(zone, entry)| (*zone, entry)),
-        observed_at,
-    )?;
+    let actual = attribute_work(entries.iter().map(|(zone, entry)| (*zone, entry)), cutoff)?;
     let uncertain_since = open_day_since.filter(|_| {
         active.as_ref().map(|active| active.entry_id) != trusted_entry || trusted_entry.is_none()
     });
@@ -195,7 +202,7 @@ pub(super) fn observations(
 
 pub(crate) fn today_finished(db: &Connection, today: NaiveDate) -> Result<bool, StoreError> {
     let mut stmt = db.prepare(
-        "SELECT timezone, ended_at_utc_ms FROM workdays
+        "SELECT timezone, started_at_utc_ms, ended_at_utc_ms FROM workdays
          WHERE finalized = 1 AND ended_at_utc_ms IS NOT NULL
            AND ended_at_utc_ms >= ?1 AND ended_at_utc_ms < ?2",
     )?;
@@ -206,13 +213,20 @@ pub(crate) fn today_finished(db: &Connection, today: NaiveDate) -> Result<bool, 
     let lower = (midnight - chrono::TimeDelta::days(1)).timestamp_millis();
     let upper = (midnight + chrono::TimeDelta::days(2)).timestamp_millis();
     for result in stmt.query_map([lower, upper], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })? {
-        let (zone, end) = result?;
+        let (zone, start, end) = result?;
         let zone: Tz = zone
             .parse()
             .map_err(|_| StoreError::InvalidStoredValue("timezone"))?;
-        if parse_timestamp(end)?.with_timezone(&zone).date_naive() == today {
+        if crate::tracker::finished_date(zone, start, end)
+            .map_err(|_| StoreError::InvalidStoredValue("workday end"))?
+            == today
+        {
             return Ok(true);
         }
     }

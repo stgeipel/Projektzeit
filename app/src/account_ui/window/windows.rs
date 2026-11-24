@@ -13,9 +13,9 @@ use windows_sys::Win32::{
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            GWL_EXSTYLE, GetWindowLongPtrW, SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED,
-            SWP_NOACTIVATE, SetWindowLongPtrW, WINDOWPOS, WM_NCDESTROY, WM_SIZE,
-            WM_WINDOWPOSCHANGING, WS_EX_NOACTIVATE,
+            GWL_EXSTYLE, GetWindowLongPtrW, PBT_APMRESUMEAUTOMATIC, SIZE_MAXIMIZED, SIZE_MINIMIZED,
+            SIZE_RESTORED, SWP_NOACTIVATE, SetWindowLongPtrW, WINDOWPOS, WM_NCDESTROY,
+            WM_POWERBROADCAST, WM_SIZE, WM_TIMECHANGE, WM_WINDOWPOSCHANGING, WS_EX_NOACTIVATE,
         },
     },
 };
@@ -23,7 +23,10 @@ use windows_sys::Win32::{
 use super::{Area, Point};
 
 const MINIMIZE_SUBCLASS: usize = 1;
-type Callback = Box<dyn Fn(bool) + Send>;
+struct Notifications {
+    minimize: Box<dyn Fn(bool) + Send>,
+    clock_interrupted: Box<dyn Fn() + Send>,
+}
 
 fn hwnd(window: &Window) -> Option<HWND> {
     let handle = window.window_handle();
@@ -34,16 +37,20 @@ fn hwnd(window: &Window) -> Option<HWND> {
     }
 }
 
-pub(super) fn observe_minimize(
+pub(super) fn observe_window(
     window: &Window,
     installed: &mut Option<HWND>,
-    notify: impl Fn(bool) + Send + 'static,
+    minimize: impl Fn(bool) + Send + 'static,
+    clock_interrupted: impl Fn() + Send + 'static,
 ) {
     let Some(hwnd) = hwnd(window) else { return };
     if *installed == Some(hwnd) {
         return;
     }
-    let callback: Box<Callback> = Box::new(Box::new(notify));
+    let callback = Box::new(Notifications {
+        minimize: Box::new(minimize),
+        clock_interrupted: Box::new(clock_interrupted),
+    });
     // The callback is delivered on the owning GUI thread. The subclass owns
     // the Box until WM_NCDESTROY, or until installation fails.
     let callback = Box::into_raw(callback);
@@ -70,7 +77,7 @@ unsafe extern "system" fn window_proc(
     subclass: usize,
     data: usize,
 ) -> LRESULT {
-    let callback = data as *mut Callback;
+    let callback = data as *mut Notifications;
     if message == WM_NCDESTROY {
         unsafe {
             RemoveWindowSubclass(hwnd, Some(window_proc), subclass);
@@ -86,7 +93,14 @@ unsafe extern "system" fn window_proc(
         // The callback only posts to the Slint event loop, avoiding reentry
         // while Win32/Winit dispatches the message.
         unsafe {
-            (*callback)(minimized);
+            ((*callback).minimize)(minimized);
+        }
+    } else if message == WM_TIMECHANGE
+        || (message == WM_POWERBROADCAST && wparam == PBT_APMRESUMEAUTOMATIC as WPARAM)
+    {
+        // Resume invalidates the in-process observation even after a brief sleep.
+        unsafe {
+            ((*callback).clock_interrupted)();
         }
     }
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }

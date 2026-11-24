@@ -522,6 +522,7 @@ mod tests {
             start,
             end,
             counted: true,
+            uncertain: false,
         }
     }
 

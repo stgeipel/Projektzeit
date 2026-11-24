@@ -5,7 +5,11 @@ use chrono_tz::Tz;
 use projektzeit_core::Timestamp;
 use projektzeit_storage::tracker::{self, Command, EntryInput, Error, Kind, Project, Recovery};
 use slint::{Color, ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use super::{
     Controller, Page, Range, action, dash, dashboard, display_date, duration, local_date, model,
@@ -23,7 +27,7 @@ pub(super) struct Tracking {
     filter: Option<String>,
     pub editor: Option<EntryEditor>,
     timer: Timer,
-    last_pulse: Timestamp,
+    last_pulse: ClockSample,
 }
 
 impl Tracking {
@@ -41,13 +45,12 @@ impl Tracking {
             filter: None,
             editor: None,
             timer: Timer::default(),
-            last_pulse: now,
+            last_pulse: ClockSample::new(now),
         })
     }
 
-    fn expire_trust(&mut self, at: Timestamp) -> bool {
-        let gap = at - self.last_pulse;
-        if self.trusted.is_some() && !(TimeDelta::zero()..=TimeDelta::minutes(2)).contains(&gap) {
+    fn expire_trust(&mut self, at: ClockSample) -> bool {
+        if self.trusted.is_some() && !self.last_pulse.continuous_to(at) {
             self.trusted = None;
             return true;
         }
@@ -59,6 +62,35 @@ impl Tracking {
     }
     pub fn filtered(&self) -> bool {
         self.filter.is_some()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ClockSample {
+    wall: Timestamp,
+    steady: Instant,
+}
+
+impl ClockSample {
+    fn new(wall: Timestamp) -> Self {
+        Self {
+            wall,
+            steady: Instant::now(),
+        }
+    }
+
+    /// Reject missing pulses and changes to wall time that disagree with elapsed time.
+    fn continuous_to(self, next: Self) -> bool {
+        let Some(elapsed) = next.steady.checked_duration_since(self.steady) else {
+            return false;
+        };
+        let wall = next.wall - self.wall;
+        let Ok(steady) = TimeDelta::from_std(elapsed) else {
+            return false;
+        };
+        (TimeDelta::zero()..=TimeDelta::minutes(2)).contains(&wall)
+            && steady <= TimeDelta::minutes(2)
+            && (wall - steady).abs() <= TimeDelta::seconds(2)
     }
 }
 
@@ -254,7 +286,9 @@ pub(super) fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller
             if let (Some(state), Some(window)) = (weak_state.upgrade(), weak_window.upgrade()) {
                 let mut state = state.borrow_mut();
                 let at = now();
-                if local_date(at, state.zone) != local_date(state.tracking.last_pulse, state.zone) {
+                if local_date(at, state.zone)
+                    != local_date(state.tracking.last_pulse.wall, state.zone)
+                {
                     if let Err(error) = state.render(&window) {
                         window.set_feedback(error.into());
                     }
@@ -266,7 +300,7 @@ pub(super) fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller
                         mini.set_feedback(error.into());
                     }
                 }
-                state.tracking.last_pulse = at;
+                state.tracking.last_pulse = ClockSample::new(at);
             }
         },
     );
@@ -318,7 +352,7 @@ pub(super) fn connect_mini(mini: &MiniTimer, main: &AccountWindow) {
 impl Controller {
     fn tracking_action(&mut self, window: &AccountWindow, event: i32) -> Result<(), String> {
         let at = now();
-        if self.tracking.expire_trust(at) {
+        if self.tracking.expire_trust(ClockSample::new(at)) {
             self.render(window)?;
             return Err("Bitte die Zeit seit dem letzten Speicherpunkt prüfen.".into());
         }
@@ -376,7 +410,7 @@ impl Controller {
         self.tracking.trusted = tracker::active(&self.connection)
             .map_err(tracking_error)?
             .map(|session| session.entry_id);
-        self.tracking.last_pulse = at;
+        self.tracking.last_pulse = ClockSample::new(at);
         if pending.is_some() {
             self.tracking.pending_activity = pending;
         }
@@ -409,7 +443,7 @@ impl Controller {
     ) -> Result<(), String> {
         let today = local_date(at, self.zone);
         let session = tracker::active(&self.connection).map_err(tracking_error)?;
-        self.tracking.expire_trust(at);
+        self.tracking.expire_trust(ClockSample::new(at));
         if self.tracking.trusted.is_some() {
             if session
                 .as_ref()
@@ -424,7 +458,7 @@ impl Controller {
                 tracker::checkpoint(&self.connection, session.entry_id, at)
                     .map_err(tracking_error)?;
             }
-            self.tracking.last_pulse = at;
+            self.tracking.last_pulse = ClockSample::new(at);
         }
         let trusted = session
             .as_ref()
@@ -511,7 +545,9 @@ impl Controller {
                 .unwrap_or_default()
                 .into(),
             pending_count: self.tracking.pending_count as i32,
-            can_finalize: mode == 0 && day.has_closed,
+            can_finalize: mode == 0
+                && tracker::can_finalize_manual_day(&self.connection, today, at)
+                    .map_err(tracking_error)?,
         };
         if self.page == Page::Today {
             window.set_segments(model(day.rows));
@@ -523,14 +559,21 @@ impl Controller {
         Ok(())
     }
 
-    pub(super) fn checkpoint(&self) {
+    pub(super) fn clock_interrupted(&mut self, window: &AccountWindow) -> Result<(), String> {
+        if self.tracking.trusted.take().is_some() {
+            self.render(window)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn checkpoint(&self) -> Result<(), String> {
         let at = now();
         if let Some(entry) = self.tracking.trusted
-            && (TimeDelta::zero()..=TimeDelta::minutes(2))
-                .contains(&(at - self.tracking.last_pulse))
+            && self.tracking.last_pulse.continuous_to(ClockSample::new(at))
         {
-            let _ = tracker::checkpoint(&self.connection, entry, at);
+            tracker::checkpoint(&self.connection, entry, at).map_err(tracking_error)?;
         }
+        Ok(())
     }
 
     pub(super) fn show_projects(&self, window: &AccountWindow) {
@@ -831,5 +874,45 @@ pub(super) fn tracking_error(error: Error) -> String {
         }
         Error::OpenEntry => "Offene Zeiten können nach dem Beenden bearbeitet werden.".into(),
         other => format!("Zeitdaten konnten nicht verarbeitet werden ({other})."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_clock_jumps_and_standby_gaps_are_not_trusted() {
+        let before = ClockSample::new(Timestamp::from_timestamp(1_700_000_000, 0).unwrap());
+        let after = |wall, steady| ClockSample {
+            wall: before.wall + TimeDelta::seconds(wall),
+            steady: before.steady + Duration::from_secs(steady),
+        };
+        assert!(before.continuous_to(after(1, 1)));
+        assert!(!before.continuous_to(after(45, 1)));
+        assert!(!before.continuous_to(after(1, 45)));
+        assert!(!before.continuous_to(after(-1, 1)));
+        assert!(!before.continuous_to(after(121, 121)));
+    }
+
+    #[test]
+    fn unchanged_dst_fold_preserves_utc_endpoints_while_new_ambiguous_inputs_fail() {
+        let zone = chrono_tz::Europe::Berlin;
+        let first = chrono::DateTime::parse_from_rfc3339("2026-10-25T02:30:00+02:00")
+            .unwrap()
+            .to_utc();
+        let second = chrono::DateTime::parse_from_rfc3339("2026-10-25T02:30:00+01:00")
+            .unwrap()
+            .to_utc();
+        assert_eq!(
+            parse_local(zone, "25.10.2026", "02:30", Some(first)).unwrap(),
+            first
+        );
+        assert_eq!(
+            parse_local(zone, "25.10.2026", "02:30", Some(second)).unwrap(),
+            second
+        );
+        assert!(parse_local(zone, "25.10.2026", "02:30", None).is_err());
+        assert!(parse_local(zone, "29.03.2026", "02:30", None).is_err());
     }
 }

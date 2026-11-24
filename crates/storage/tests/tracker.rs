@@ -287,3 +287,100 @@ fn manual_finish_and_boundary_correction_settle_today_and_preserve_the_break() {
         Some(monday("16:00"))
     );
 }
+
+#[test]
+fn clock_rollback_preserves_the_checkpoint_and_allows_finishing_at_it() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("rollback.sqlite");
+    let mut db = open(&path).unwrap();
+    account_setup(&mut db, 0);
+    let session = tracker::start(&mut db, Berlin, None, monday("08:00")).unwrap();
+    tracker::checkpoint(&db, session.entry_id, monday("08:30")).unwrap();
+    drop(db);
+
+    let mut db = open(&path).unwrap();
+    let rollback = monday("08:10");
+    let day = rollback.with_timezone(&Berlin).date_naive();
+    let totals =
+        |db: &mut Connection| account::report(db, Period::day(day), day, day, rollback).unwrap();
+    let recovering = totals(&mut db);
+    assert_eq!(recovering.period.totals.actual, 1800);
+    assert_eq!(recovering.period.finalized_totals.target, 0);
+    assert!(recovering.period.excludes_open_time);
+    for command in [Command::Pause, Command::Finish] {
+        assert!(matches!(
+            tracker::transition(&mut db, session.entry_id, command, rollback),
+            Err(Error::InvalidRange)
+        ));
+    }
+    assert!(matches!(
+        tracker::recover(&mut db, session.entry_id, Recovery::Include, rollback),
+        Err(Error::InvalidRange)
+    ));
+    let pending = tracker::recover(
+        &mut db,
+        session.entry_id,
+        Recovery::FinishAtCheckpoint,
+        rollback,
+    )
+    .unwrap();
+    assert_eq!(pending, Some(session.entry_id));
+    assert_eq!(
+        tracker::entry(&db, session.entry_id).unwrap().end,
+        Some(monday("08:30"))
+    );
+    assert_eq!(totals(&mut db).period.totals.actual, 1800);
+}
+
+#[test]
+fn finishing_at_the_exact_midnight_leaves_the_new_day_unfinished() {
+    let dir = tempdir().unwrap();
+    let mut db = open(dir.path().join("midnight.sqlite")).unwrap();
+    account_setup(&mut db, 0);
+    let session = tracker::start(&mut db, Berlin, None, monday("16:00")).unwrap();
+    tracker::transition(&mut db, session.entry_id, Command::Finish, tuesday("00:00")).unwrap();
+    let today = tuesday("00:00").with_timezone(&Berlin).date_naive();
+    assert!(tracker::day_finished(&db, today.pred_opt().unwrap()).unwrap());
+    assert!(!tracker::day_finished(&db, today).unwrap());
+    let report = account::report(
+        &mut db,
+        Period::iso_week(today).unwrap(),
+        today,
+        today,
+        tuesday("00:00"),
+    )
+    .unwrap();
+    assert_eq!(report.period.finalized_totals.actual, 28_800);
+    assert_eq!(report.balance_as_of, Some(1_440));
+}
+
+#[test]
+fn unfinished_overnight_manual_entry_can_be_completed_on_its_end_date() {
+    let dir = tempdir().unwrap();
+    let mut db = open(dir.path().join("overnight.sqlite")).unwrap();
+    let now = tuesday("07:00");
+    account_setup(&mut db, 0);
+    tracker::save_entry(
+        &mut db,
+        None,
+        EntryInput {
+            kind: Kind::Work,
+            project: None,
+            zone: Berlin,
+            start: monday("22:30"),
+            end: tuesday("05:30"),
+            activity: "Nachtwache",
+        },
+        now,
+    )
+    .unwrap();
+    let today = now.with_timezone(&Berlin).date_naive();
+    assert!(!tracker::day_finished(&db, today).unwrap());
+    assert!(tracker::can_finalize_manual_day(&db, today, now).unwrap());
+    tracker::finalize_manual_day(&mut db, Berlin, now).unwrap();
+    let report =
+        account::report(&mut db, Period::iso_week(today).unwrap(), today, today, now).unwrap();
+    assert_eq!(report.period.days[0].observed.unwrap().actual, 5400);
+    assert_eq!(report.period.days[1].observed.unwrap().actual, 19_800);
+    assert!(tracker::day_finished(&db, today).unwrap());
+}

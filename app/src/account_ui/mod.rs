@@ -311,14 +311,29 @@ fn connect_desktop(window: &AccountWindow, controller: &Rc<RefCell<Controller>>)
             .minimize_changed(minimized, state.mini_preferences.auto_show);
         state.apply_window_action(window, change)
     }));
-    window::observe_main(window.window(), {
-        let main = window.as_weak();
-        move |minimized| {
-            if let Some(window) = main.upgrade() {
-                window.invoke_native_minimized(minimized);
-            }
-        }
+    let interrupted = action(window, controller, |state, window, ()| {
+        state.clock_interrupted(window)
     });
+    window.on_native_clock_interrupted(move || interrupted(()));
+    window::observe_main(
+        window.window(),
+        {
+            let main = window.as_weak();
+            move |minimized| {
+                if let Some(window) = main.upgrade() {
+                    window.invoke_native_minimized(minimized);
+                }
+            }
+        },
+        {
+            let main = window.as_weak();
+            move || {
+                if let Some(window) = main.upgrade() {
+                    window.invoke_native_clock_interrupted();
+                }
+            }
+        },
+    );
 
     let moved = action(window, controller, {
         let controller = Rc::downgrade(controller);
@@ -418,8 +433,13 @@ fn connect_desktop(window: &AccountWindow, controller: &Rc<RefCell<Controller>>)
                 window.set_feedback(error.into());
                 return CloseRequestResponse::KeepWindowShown;
             }
-            let _ = state.remember_mini_position();
-            state.checkpoint();
+            if let Err(error) = state
+                .checkpoint()
+                .and_then(|()| state.remember_mini_position())
+            {
+                window.set_feedback(error.into());
+                return CloseRequestResponse::KeepWindowShown;
+            }
         }
         CloseRequestResponse::HideWindow
     });

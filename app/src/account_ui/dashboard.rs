@@ -13,7 +13,6 @@ pub(super) struct Timeline {
     pub rows: Vec<SegmentRow>,
     pub work_seconds: i64,
     pub break_seconds: i64,
-    pub has_closed: bool,
 }
 
 pub(super) struct Slice {
@@ -22,6 +21,7 @@ pub(super) struct Slice {
     pub start: Timestamp,
     pub end: Timestamp,
     pub counted: bool,
+    pub uncertain: bool,
 }
 
 pub(super) fn slices(
@@ -35,20 +35,37 @@ pub(super) fn slices(
             .expect("midnight is representable")
             .and_utc()
     };
-    let lower = midnight(period.start()) - TimeDelta::days(1);
-    // All stored timezone offsets are strictly within ±24 hours of UTC.
-    let upper = (midnight(period.end()) + TimeDelta::days(2)).min(observed_at);
-    if upper < lower {
-        return Ok(Vec::new());
-    }
+    let lower = midnight(period.start())
+        .checked_sub_signed(TimeDelta::days(1))
+        .ok_or_else(|| {
+            account_error(projektzeit_core::worktime_account::AccountError::InvalidDateRange)
+        })?;
+    // All stored offsets are within ±24h of UTC. Keep committed endpoints even
+    // when the system's clock has moved backwards.
+    let upper = midnight(period.end())
+        .checked_add_signed(TimeDelta::days(2))
+        .ok_or_else(|| {
+            account_error(projektzeit_core::worktime_account::AccountError::InvalidDateRange)
+        })?;
+    let session = tracker::active(db).map_err(tracking_error)?;
     let mut result = Vec::new();
     for entry in tracker::entries(db, lower, upper).map_err(tracking_error)? {
-        let counted = entry.end.is_some() || trusted == Some(entry.id);
+        let open = session
+            .as_ref()
+            .filter(|session| session.entry_id == entry.id);
+        let uncertain = entry.end.is_none() && trusted != Some(entry.id);
         let from = entry.start.max(lower);
-        let through = entry.end.unwrap_or(upper).min(upper);
+        let confirmed = entry.end.or_else(|| open.map(|session| session.checkpoint));
+        let through = if entry.end.is_none() && !uncertain {
+            observed_at.max(confirmed.unwrap_or(entry.start))
+        } else {
+            confirmed.unwrap_or(entry.start)
+        }
+        .min(upper);
         if through < from {
             continue;
         }
+        let counted = !uncertain || through > from;
         let mut add = |date, start, end| {
             if (period.start()..=period.end()).contains(&date) {
                 result.push(Slice {
@@ -57,6 +74,7 @@ pub(super) fn slices(
                     start,
                     end,
                     counted,
+                    uncertain,
                 });
             }
         };
@@ -65,11 +83,7 @@ pub(super) fn slices(
         } else {
             let span = TimeSpan::new(from, Some(through)).map_err(|e| e.to_string())?;
             visit_local_intervals(span, entry.zone, upper, |day, start, end| {
-                // An unclassified open segment is a reminder on its start date,
-                // never a claim of elapsed work on subsequent dates.
-                if counted || day == entry.start.with_timezone(&entry.zone).date_naive() {
-                    add(day, start, end);
-                }
+                add(day, start, end);
                 Ok(())
             })
             .map_err(account_error)?;
@@ -89,7 +103,11 @@ impl Slice {
                 .to_string()
         };
         let begin = local_time(self.start);
-        let end = entry.end.map_or_else(dash, |_| local_time(self.end));
+        let end = if entry.end.is_some() || (self.uncertain && self.counted) {
+            local_time(self.end)
+        } else {
+            dash()
+        };
         let pause = entry.kind == Kind::Break;
         let pending = !pause && entry.end.is_some() && entry.activity.trim().is_empty();
         SegmentRow {
@@ -103,7 +121,9 @@ impl Slice {
                 entry.project_name.as_deref().unwrap_or("Ohne Projekt")
             }
             .into(),
-            detail: if !self.counted {
+            detail: if self.uncertain && self.counted {
+                "Bis Speicherpunkt · Wiederaufnahme prüfen"
+            } else if self.uncertain {
                 "Offen · Wiederaufnahme prüfen"
             } else if entry.end.is_none() {
                 if pause {
@@ -119,7 +139,7 @@ impl Slice {
             .into(),
             time: format!(
                 "{begin} – {}",
-                if entry.end.is_some() {
+                if entry.end.is_some() || (self.uncertain && self.counted) {
                     end.as_str()
                 } else {
                     "offen"
@@ -151,7 +171,6 @@ pub(super) fn timeline(
     let mut work_millis = 0;
     let mut break_millis = 0;
     for slice in slices {
-        result.has_closed |= slice.entry.end.is_some();
         if slice.counted {
             let elapsed = (slice.end - slice.start).num_milliseconds();
             match slice.entry.kind {

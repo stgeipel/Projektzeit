@@ -76,18 +76,34 @@ impl WindowState {
     }
 }
 
-pub(super) fn observe_main(window: &Window, notify: impl Fn(bool) + Clone + Send + 'static) {
+pub(super) fn observe_main(
+    window: &Window,
+    notify: impl Fn(bool) + Clone + Send + 'static,
+    clock_interrupted: impl Fn() + Clone + Send + 'static,
+) {
+    #[cfg(not(windows))]
+    let _ = clock_interrupted;
     #[cfg(windows)]
     let mut hooked_window = None;
     window.on_winit_window_event(move |window, event| {
         #[cfg(windows)]
-        windows::observe_minimize(window, &mut hooked_window, {
-            let notify = notify.clone();
-            move |minimized| {
+        windows::observe_window(
+            window,
+            &mut hooked_window,
+            {
                 let notify = notify.clone();
-                let _ = slint::invoke_from_event_loop(move || notify(minimized));
-            }
-        });
+                move |minimized| {
+                    let notify = notify.clone();
+                    let _ = slint::invoke_from_event_loop(move || notify(minimized));
+                }
+            },
+            {
+                let clock_interrupted = clock_interrupted.clone();
+                move || {
+                    let _ = slint::invoke_from_event_loop(clock_interrupted.clone());
+                }
+            },
+        );
         if matches!(
             event,
             WindowEvent::Focused(_) | WindowEvent::Occluded(_) | WindowEvent::Resized(_)
