@@ -1291,7 +1291,6 @@ slint::slint! {
         in property <int> assignment-index;
         in property <[Metric]> week-metrics;
         in property <[Metric]> month-metrics;
-        private property <bool> show-about;
         in property <bool> autostart-supported;
         in property <bool> autostart;
         in property <string> database-path;
@@ -1351,6 +1350,21 @@ slint::slint! {
         init => { root.apply-scheme(); }
         changed scheme => { root.apply-scheme(); }
 
+        about := PopupWindow {
+            x: (root.width - self.width) / 2;
+            y: 64px;
+            width: 390px;
+            close-policy: close-on-click-outside;
+            Card {
+                VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    SectionTitle { text: "Über Projektzeit"; }
+                    AboutSlint {}
+                    ActionButton { label: "Schließen"; clicked => { about.close(); } }
+                }
+            }
+        }
+
         VerticalLayout {
             x: 0px;
             y: 0px;
@@ -1368,6 +1382,7 @@ slint::slint! {
                     }
                     Text { text: "Projektzeit"; color: Theme.rail-ink; font-size: 20px; font-weight: 710; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
+                    ActionButton { label: "Über Projektzeit"; nav: true; clicked => { about.show(); } }
                     ActionButton { label: "Mini-Timer"; nav: true; clicked => { root.show-mini(); } }
                 }
             }
@@ -1559,8 +1574,7 @@ slint::slint! {
                                         backup := LineEdit { accessible-label: "Zielpfad für Datensicherung"; placeholder-text: "Zielpfad für SQLite-Sicherung"; }
                                         ActionButton { label: "Sichern"; clicked => { root.backup-to(backup.text); } }
                                     }
-                                    ActionButton { label: root.show-about ? "Über Projektzeit schließen" : "Über Projektzeit"; clicked => { root.show-about = !root.show-about; } }
-                                    if root.show-about: AboutSlint {}
+                                    ActionButton { label: "Über Projektzeit"; clicked => { about.show(); } }
                                 }
                             }
                         }
