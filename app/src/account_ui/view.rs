@@ -5,6 +5,7 @@ slint::slint! {
     export struct ScheduleInputs { values: [string], message: string, invalid: bool, date: string }
     export struct MiniOptions { auto-show: bool, topmost: bool, remember: bool }
     export struct Metric { label: string, value: string }
+    export struct DashboardBalance { due: string, actual: string, delta: string, period: string }
     export struct DayRow { date: string, actual: string, target: string, delta: string }
     export struct SegmentRow {
         title: string, detail: string, time: string, begin: string, finish: string,
@@ -13,7 +14,7 @@ slint::slint! {
     export struct AdjustmentRow { id: string, date: string, reason: string, amount: string, voided: bool }
     export struct TrackingView {
         mode: int, selection: int, projects: [string], worked: string, remaining: string,
-        target: string, breaks: string, finish: string, progress: float, project: string,
+        target: string, breaks: string, finish: string, clock: string, progress: float, project: string,
         segment-time: string, delta: string, pending-id: string, pending-count: int, can-finalize: bool, swatch: color,
     }
     export struct EntryForm {
@@ -32,24 +33,26 @@ slint::slint! {
     global Theme {
         private property <color> system-background: Palette.background;
         out property <bool> dark: system-background.red < 128;
-        out property <color> canvas: dark ? #13251f : #f3f7fb;
+        out property <color> canvas: dark ? #13251f : #f1f7f7;
         out property <color> surface: dark ? #1b2f28 : #ffffff;
-        out property <color> tint: dark ? #253f33 : #ecfdf5;
-        out property <color> border: dark ? #3b5145 : #dbe5ed;
+        out property <color> tint: dark ? #253f33 : #e4f6ef;
+        out property <color> border: dark ? #3b5145 : #d4e5e2;
         out property <color> ink: dark ? #f2f5ed : #0f172a;
         out property <color> muted: dark ? #b2c4b8 : #46576a;
         out property <color> green: dark ? #a0edc2 : #0e5a47;
         out property <color> focus: dark ? #b8e9bf : #0e5a47;
         out property <color> warning: dark ? #f2cd91 : #764718;
-        out property <color> rail: #0B1f1a;
-        out property <color> rail-active: #0e774b;
+        out property <color> rail: #07382d;
+        out property <color> rail-active: #12865d;
+        out property <color> rail-accent: #44dca8;
+        out property <color> hero-green: #075540;
+        out property <color> raised: dark ? #243b32 : #f9fcfc;
+        out property <color> danger: dark ? #ffb4ad : #ad2621;
         out property <color> rail-ink: #f3f9ed;
         out property <color> rail-muted: #bad1c0;
         out property <color> chart: dark ? #34d399 : #0B9b57;
         out property <color> track: dark ? #345747 : #dbe7ee;
         out property <color> pause-tint: dark ? #43392a : #fff5dc;
-        out property <color> hero: dark ? #234936 : #28563d;
-        out property <color> on-hero: #f4faef;
         out property <color> on-action: dark ? #15231d : #ffffff;
     }
 
@@ -90,18 +93,31 @@ slint::slint! {
         in property <bool> align-left;
         in property <bool> enabled: true;
         in property <string> icon;
+        in property <string> detail;
+        in property <bool> large;
+        in property <bool> tile;
+        in property <bool> danger;
+        in property <bool> icon-only;
+        private property <length> icon-size: root.large ? 34px : root.tile ? 25px : 18px;
+        private property <length> caption-x: root.icon == "" ? 14px : (root.large || root.tile ? root.icon-size + 31px : root.nav ? 34px : 39px);
         callback clicked;
 
-        min-width: caption.preferred-width + 28px + (root.icon == "" ? 0px : 26px);
-        height: 38px;
+        min-width: root.icon-only ? 32px
+            : (root.tile ? 112px : caption.preferred-width + root.caption-x + 14px);
+        preferred-width: root.tile ? caption.preferred-width + root.caption-x + 16px : self.min-width;
+        max-width: root.icon-only ? 32px : 10000px;
+        height: root.large ? 78px : root.tile ? 64px : root.icon-only ? 34px : 38px;
         horizontal-stretch: root.align-left ? 1 : 0;
-        border-radius: 7px;
+        border-radius: root.large || root.tile ? 12px : 8px;
         border-width: focus.has-focus ? 2px : 1px;
         border-color: focus.has-focus ? (root.nav ? Theme.rail-ink : Theme.focus)
-            : root.nav || root.primary ? transparent : Theme.border;
+            : root.nav || root.primary || root.icon-only ? transparent : Theme.border;
         background: !root.enabled ? Theme.tint
-            : root.nav ? (root.selected || touch.has-hover ? Theme.rail-active : transparent)
+            : root.nav ? (root.selected ? Theme.rail-accent : touch.has-hover ? Theme.rail-active : transparent)
+            : root.large ? (touch.has-hover ? #096f50 : Theme.hero-green)
             : root.primary ? (touch.has-hover ? Theme.green.darker(0.12) : Theme.green)
+            : root.tile ? (touch.has-hover ? Theme.tint : Theme.raised)
+            : root.icon-only ? (touch.has-hover ? Theme.tint : transparent)
             : touch.has-hover || root.selected ? Theme.tint : Theme.surface;
         forward-focus: focus;
 
@@ -113,20 +129,34 @@ slint::slint! {
         accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
         if root.icon != "": LineIcon {
-            x: 13px; y: (parent.height - self.height)/2; width: 18px; height: 18px;
-            shape: root.icon; ink: Theme.rail-ink;
+            x: root.icon-only ? (parent.width - self.width) / 2 : (root.large || root.tile ? 16px : 13px);
+            y: (parent.height - self.height) / 2;
+            width: root.icon-size; height: root.icon-size;
+            shape: root.icon;
+            ink: root.danger ? Theme.danger : (root.nav && root.selected ? Theme.hero-green : root.nav || root.large ? Theme.rail-ink : Theme.green);
         }
         caption := Text {
-            x: root.icon == "" ? 14px : 39px;
-            width: parent.width - self.x - 14px;
-            height: parent.height;
+            x: root.caption-x; y: root.detail == "" ? 0px : 9px;
+            width: max(0px, parent.width - self.x - 12px);
+            height: root.detail == "" ? parent.height : (root.large ? 35px : 22px);
+            visible: !root.icon-only;
             text: root.label;
-            color: !root.enabled ? Theme.muted : root.nav ? Theme.rail-ink
-                : root.primary ? Theme.on-action : Theme.ink;
-            font-size: 14px;
-            font-weight: root.selected || root.primary ? 670 : 520;
+            overflow: elide;
+            color: !root.enabled ? Theme.muted : root.nav ? (root.selected ? Theme.hero-green : Theme.rail-ink)
+                : root.large ? Theme.rail-ink : root.primary ? Theme.on-action : Theme.ink;
+            font-size: root.large ? 27px : root.tile ? 16px : root.nav ? 13px : 14px;
+            font-weight: root.selected || root.primary || root.tile ? 690 : 520;
             vertical-alignment: center;
             horizontal-alignment: root.align-left ? left : center;
+        }
+        if root.detail != "": Label {
+            x: root.caption-x;
+            y: root.large ? 46px : 33px;
+            width: max(0px, parent.width - self.x - 12px);
+            text: root.detail;
+            font-size: root.large ? 14px : 12px;
+            color: root.large ? Theme.rail-ink : Theme.muted;
+            overflow: elide;
         }
         touch := TouchArea {
             enabled: root.enabled;
@@ -141,49 +171,6 @@ slint::slint! {
                     return accept;
                 }
                 return reject;
-            }
-        }
-    }
-
-    component StatCard inherits Card {
-        in property <Metric> item;
-        in property <bool> hero;
-        min-width: 170px;
-        preferred-height: 77px;
-        horizontal-stretch: 1;
-        background: root.hero ? Theme.hero : Theme.surface;
-        border-color: root.hero ? Theme.hero : Theme.border;
-        VerticalLayout {
-            padding: 16px;
-            spacing: 6px;
-            alignment: start;
-            Label { text: root.item.label; color: root.hero ? Theme.rail-muted : Theme.muted; }
-            Text {
-                text: root.item.value;
-                font-size: 22px;
-                font-weight: 700;
-                color: root.hero ? Theme.on-hero : Theme.ink;
-            }
-
-        }
-    }
-
-    component StatCards inherits VerticalLayout {
-        in property <[Metric]> items;
-        in property <bool> narrow;
-        spacing: 8px;
-        if !root.narrow: HorizontalLayout {
-            spacing: 12px;
-            for item[index] in root.items: StatCard {
-                item: item;
-                hero: index == 0;
-            }
-        }
-        if root.narrow: VerticalLayout {
-            spacing: 8px;
-            for item[index] in root.items: StatCard {
-                item: item;
-                hero: index == 0;
             }
         }
     }
@@ -232,17 +219,8 @@ slint::slint! {
         background: Theme.rail;
 
         if !root.compact: VerticalLayout {
-            padding: 18px;
-            spacing: 7px;
-            HorizontalLayout {
-                spacing: 9px;
-                LineIcon {
-                    width: 29px; height: 29px; ink: #34d399;
-                    shape: "M12 5 A8 8 0 1 0 12 21 A8 8 0 1 0 12 5 M9 2 H15 M12 2 V5 M17 6 L19 4 M12 9 V14";
-                }
-                Label { text: "Projektzeit"; color: Theme.rail-ink; font-size: 22px; font-weight: 720; vertical-alignment: center; }
-            }
-            Rectangle { height: 12px; }
+            padding: 8px;
+            spacing: 6px;
             for link[index] in root.links: ActionButton {
                 label: link; nav: true; align-left: true; selected: index == root.page; icon: root.icons[index];
                 clicked => { root.navigate(index); }
@@ -595,39 +573,83 @@ slint::slint! {
         }
     }
 
+    component ProjectPicker inherits HorizontalLayout {
+        in property <TrackingView> data;
+        in property <bool> featured;
+        callback select(int);
+        callback add;
+        spacing: 8px;
+        if root.featured: LineIcon {
+            width: 27px; height: 27px;
+            shape: "M3 6 H10 L12 8 H21 V19 H3 Z";
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            if root.featured: Label { text: "Projekt wählen"; color: Theme.ink; font-weight: 640; }
+            selector := ProjectSelector {
+                model: root.data.projects; selection: root.data.selection;
+                accessible-label: "Projekt wählen"; horizontal-stretch: 1;
+                selected => { root.select(self.current-index); }
+            }
+        }
+        ActionButton {
+            label: "Projekt direkt anlegen"; icon-only: true;
+            icon: "M12 5 V19 M5 12 H19";
+            clicked => { root.add(); }
+        }
+    }
+
     component TrackingControls inherits Card {
         in property <TrackingView> data;
         in property <bool> compact;
+        in property <bool> featured;
         callback command(int);
         callback select-project(int);
         callback create-project(string);
         callback describe(string);
         private property <bool> new-project;
         private property <int> mode: root.data.mode;
-        background: Theme.tint;
+        background: root.featured ? Theme.surface : Theme.tint;
+        horizontal-stretch: 1;
         VerticalLayout {
-            padding: root.compact ? 12px : 18px;
+            padding: root.compact ? 12px : 14px;
             spacing: 9px;
-            SectionTitle { text: ["Bereit für den Arbeitstag", "Arbeit läuft", "Pause läuft", "Arbeitstag beendet", "Offene Erfassung wiederaufnehmen"][root.mode]; }
+            if !root.featured || root.mode == 1 || root.mode == 2 || root.mode == 4:
+                SectionTitle { text: ["Bereit für den Arbeitstag", "Arbeit läuft", "Pause läuft", "Arbeitstag beendet", "Offene Erfassung wiederaufnehmen"][root.mode]; }
             if root.mode == 1: HorizontalLayout {
                 spacing: 8px;
                 Rectangle { width: 9px; height: 9px; border-radius: 5px; background: root.data.swatch; }
-                Label { text: root.data.project + " · " + root.data.segment-time; color: Theme.green; horizontal-stretch: 1; }
+                Label {
+                    text: root.data.project + " · " + root.data.segment-time;
+                    color: Theme.green; horizontal-stretch: 1; overflow: elide;
+                }
             }
-            if root.mode == 0 || root.mode == 3: ActionButton {
+            if (root.mode == 0 || root.mode == 3) && root.featured: HorizontalLayout {
+                spacing: 16px;
+                ActionButton {
+                    label: root.mode == 3 ? "Weiterarbeiten" : "Arbeit starten";
+                    detail: root.mode == 3 ? "Arbeitstag beendet" : "Arbeitszeit erfassen";
+                    primary: true; large: true; align-left: true;
+                    icon: "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 M10 7 L17 12 L10 17 Z";
+                    clicked => { root.command(0); }
+                }
+                Rectangle { width: 1px; background: Theme.border; }
+                ProjectPicker {
+                    featured: true; data: root.data;
+                    horizontal-stretch: 1;
+                    select(index) => { root.select-project(index); }
+                    add => { root.new-project = !root.new-project; }
+                }
+            }
+            if (root.mode == 0 || root.mode == 3) && !root.featured: ActionButton {
                 label: root.mode == 3 ? "Weiterarbeiten" : "Arbeit starten"; primary: true;
                 clicked => { root.command(0); }
             }
-            if root.mode < 4: HorizontalLayout {
-                spacing: 6px;
-                selector := ProjectSelector {
-                    model: root.data.projects;
-                    selection: root.data.selection;
-                    accessible-label: "Projekt wählen";
-                    horizontal-stretch: 1;
-                    selected => { root.select-project(self.current-index); }
-                }
-                ActionButton { label: "+ Projekt"; clicked => { root.new-project = !root.new-project; } }
+            if root.mode < 4 && (!root.featured || (root.mode == 1 || root.mode == 2)): ProjectPicker {
+                data: root.data;
+                select(index) => { root.select-project(index); }
+                add => { root.new-project = !root.new-project; }
             }
             if root.data.can-finalize: ActionButton { label: "Tag abschließen"; clicked => { root.command(10); } }
             if root.new-project && root.mode < 4: HorizontalLayout {
@@ -740,8 +762,10 @@ slint::slint! {
         callback save(EntryForm);
         callback cancel;
         callback remove;
-        private property <bool> confirm-delete;
-        changed data => { root.confirm-delete = false; }
+        in property <bool> propose-delete;
+        private property <bool> confirm-delete: root.propose-delete;
+        changed data => { root.confirm-delete = root.propose-delete; }
+        changed propose-delete => { root.confirm-delete = root.propose-delete; }
         background: Theme.tint;
         VerticalLayout {
             padding: 14px;
@@ -859,6 +883,331 @@ slint::slint! {
         }
     }
 
+    component GreetingMark inherits Rectangle {
+        width: 53px;
+        height: 49px;
+        LineIcon {
+            x: 0px; y: 0px; width: 44px; height: 44px;
+            ink: #e8a519;
+            shape: "M12 1 V4 M4 4 L6 6 M1 12 H4 M20 4 L18 6 M20 12 H23 M7 13 A5 5 0 0 1 17 13";
+        }
+        Rectangle { x: 8px; y: 27px; width: 41px; height: 16px; border-radius: 8px; background: #b7ced7; }
+        Rectangle { x: 15px; y: 19px; width: 22px; height: 22px; border-radius: 11px; background: #c6d9df; }
+        Rectangle { x: 30px; y: 24px; width: 15px; height: 17px; border-radius: 8px; background: #b7ced7; }
+    }
+
+    component RunningClock inherits Card {
+        in property <TrackingView> data;
+        preferred-width: 320px;
+        min-width: 212px;
+        horizontal-stretch: 1;
+        VerticalLayout {
+            padding: 12px;
+            Rectangle {
+                background: Theme.tint;
+                border-radius: 12px;
+                VerticalLayout {
+                    padding: 12px; spacing: 1px;
+                    Label {
+                        text: root.data.mode == 3 ? "Tageszeit netto" : "Laufende Zeit";
+                        color: Theme.ink; font-weight: 620;
+                    }
+                    Text { text: root.data.clock; color: Theme.green; font-size: 39px; font-weight: 780; }
+                }
+            }
+        }
+    }
+
+    component TodayRow inherits Rectangle {
+        in property <SegmentRow> entry;
+        in property <bool> header;
+        callback edit(string);
+        callback remove(string);
+
+        background: root.header ? Theme.canvas : (root.entry.pause ? Theme.pause-tint : Theme.surface);
+        border-radius: 5px;
+        HorizontalLayout {
+            padding: 7px; spacing: 6px;
+            HorizontalLayout {
+                width: 104px; spacing: 5px;
+                if !root.header: Rectangle {
+                    width: 8px;
+                    Rectangle {
+                        width: 8px; height: 8px; y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: root.entry.pause ? Theme.warning : root.entry.swatch;
+                    }
+                }
+                Label {
+                    text: root.header ? "Projekt" : root.entry.title;
+                    color: Theme.ink; font-size: 13px; font-weight: root.header ? 700 : 550;
+                    overflow: elide; vertical-alignment: center; horizontal-stretch: 1;
+                }
+            }
+            Label {
+                text: root.header ? "Tätigkeit" : root.entry.detail;
+                color: root.entry.pending ? Theme.warning : Theme.ink;
+                font-size: 13px; font-weight: root.header ? 700 : 480;
+                horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap;
+            }
+            for field[index] in [
+                { label: "Start", value: root.entry.begin },
+                { label: "Ende", value: root.entry.finish },
+                { label: "Pause", value: root.entry.pause ? root.entry.amount : "–" },
+                { label: "Dauer", value: root.entry.pause ? "–" : root.entry.amount },
+            ]: Label {
+                width: index < 2 ? 42px : 72px;
+                text: root.header ? field.label : field.value;
+                color: Theme.ink; font-size: 12px; font-weight: root.header ? 700 : 490;
+                horizontal-alignment: right; vertical-alignment: center;
+            }
+            if root.entry.editable && !root.header: HorizontalLayout {
+                spacing: 2px;
+                ActionButton {
+                    label: "Zeit bearbeiten"; icon-only: true;
+                    icon: "M4 20 L8 19 L20 7 L17 4 L5 16 Z M14 7 L17 10";
+                    clicked => { root.edit(root.entry.id); }
+                }
+                ActionButton {
+                    label: "Zeit löschen"; icon-only: true; danger: true;
+                    icon: "M4 6 H20 M9 6 V3 H15 V6 M6 6 L7 21 H17 L18 6 M10 10 V17 M14 10 V17";
+                    clicked => { root.remove(root.entry.id); }
+                }
+            }
+            if !root.entry.editable || root.header: Rectangle { width: 66px; height: 28px; }
+        }
+    }
+
+    component TodayTable inherits Card {
+        in property <[SegmentRow]> segments;
+        in property <string> date;
+        in property <string> total;
+        callback edit(string);
+        callback remove(string);
+        callback browse;
+        min-width: 505px;
+        horizontal-stretch: 2;
+        VerticalLayout {
+            padding: 11px;
+            spacing: 6px;
+            alignment: start;
+            HorizontalLayout {
+                padding-bottom: 5px; spacing: 8px;
+                LineIcon { width: 25px; height: 25px; shape: "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 M12 7 V12 L16 14"; }
+                SectionTitle { text: "Heutige Zeiten"; font-size: 20px; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton {
+                    label: root.date; icon: "M4 6 H20 V21 H4 Z M4 10 H20 M8 3 V8 M16 3 V8 M16 14 H17";
+                    align-left: true; horizontal-stretch: 0;
+                    clicked => { root.browse(); }
+                }
+            }
+            if root.segments.length == 0: Label {
+                text: "Heute sind noch keine Zeiten erfasst."; wrap: word-wrap;
+            }
+            if root.segments.length > 0: TodayRow { header: true; }
+            for entry in root.segments: TodayRow {
+                entry: entry;
+                edit(id) => { root.edit(id); }
+                remove(id) => { root.remove(id); }
+            }
+            Rectangle {
+                background: Theme.tint;
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding: 10px; spacing: 8px;
+                    SectionTitle { text: "Tagessumme (Netto-Arbeitszeit)"; horizontal-stretch: 1; vertical-alignment: center; }
+                    Text { text: root.total; color: Theme.green; font-size: 20px; font-weight: 740; }
+                }
+            }
+        }
+    }
+
+    component SnapshotRanges inherits HorizontalLayout {
+        in property <int> range;
+        callback select(int);
+        spacing: 3px;
+        horizontal-stretch: 0;
+        for caption[index] in ["Heute", "Woche", "Monat"]: ActionButton {
+            label: caption; selected: index == root.range; primary: index == root.range;
+            clicked => { root.select(index); }
+        }
+    }
+
+    component AccountSnapshot inherits Card {
+        in property <TrackingView> data;
+        in property <DashboardBalance> balance;
+        in property <[Metric]> summary;
+        in property <DashboardBalance> dashboard-balance;
+        in property <int> dashboard-range;
+        in property <string> dashboard-date;
+        in property <bool> confirm-entry-delete;
+        in property <int> range;
+        in property <bool> inline-ranges;
+        callback select(int);
+        min-width: 325px;
+        preferred-width: 400px;
+        horizontal-stretch: 1;
+        VerticalLayout {
+            padding: 12px; spacing: 9px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                LineIcon { width: 25px; height: 25px; shape: "M12 3 V21 M7 21 H17 M3 7 H21 M6 7 L2 15 H10 Z M18 7 L14 15 H22 Z"; }
+                SectionTitle { text: "Arbeitszeitkonto"; font-size: 20px; vertical-alignment: center; horizontal-stretch: 1; }
+                if root.inline-ranges: SnapshotRanges {
+                    range: root.range; select(index) => { root.select(index); }
+                }
+            }
+            if !root.inline-ranges: HorizontalLayout {
+                SnapshotRanges { range: root.range; select(index) => { root.select(index); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.range != 0: Label { text: root.balance.period; font-size: 12px; }
+            HorizontalLayout {
+                spacing: 6px;
+                for metric[index] in [
+                    { label: root.range == 0 ? "Tagessoll" : "Soll fällig",
+                      value: root.range == 0 ? root.data.target : root.balance.due },
+                    { label: "Ist netto",
+                      value: root.range == 0 ? root.data.worked : root.balance.actual },
+                    { label: "Saldo", value: root.range == 0 ? (root.data.mode == 3 ? root.data.delta : "–") : root.balance.delta },
+                ]: Rectangle {
+                    background: index == 2 ? Theme.tint : Theme.canvas;
+                    border-radius: 9px;
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 8px; spacing: 4px;
+                        Label { text: metric.label; font-size: 12px; }
+                        Text {
+                            text: metric.value; color: index == 2 ? Theme.green : Theme.ink;
+                            font-size: 17px; font-weight: 740; vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            if root.range == 0 && root.data.target != "–": ProgressTrack { progress: root.data.progress; }
+            if root.range == 0 && root.data.finish != "–" && (root.data.mode == 1 || root.data.mode == 2): Label {
+                text: "Noch " + root.data.remaining + " · Feierabend ca. " + root.data.finish;
+                color: Theme.green; wrap: word-wrap;
+            }
+            if root.range == 0: Label {
+                text: root.data.mode == 2 ? "Laufende Pause " + root.data.segment-time : "Pausen heute " + root.data.breaks;
+                font-size: 12px;
+            }
+            if root.range == 0 && root.data.mode != 3 && root.data.target != "–": Label {
+                text: "Der heutige Saldo steht nach dem Tagesabschluss fest.";
+                font-size: 12px; wrap: word-wrap;
+            }
+            if root.summary.length == 0: Label {
+                text: "Für den Gesamtsaldo braucht das Arbeitszeitkonto einen Wochenplan und einen Startsaldo.";
+                font-size: 12px; wrap: word-wrap;
+            }
+            for item[index] in root.summary: VerticalLayout {
+                if index + 1 != root.range: HorizontalLayout {
+                    spacing: 7px;
+                    Label { text: item.label; font-size: 12px; horizontal-stretch: 1; }
+                    Text { text: item.value; color: Theme.ink; font-size: 13px; font-weight: 670; }
+                }
+            }
+        }
+    }
+
+    component TodayDashboard inherits VerticalLayout {
+        in property <TrackingView> data;
+        in property <[SegmentRow]> segments;
+        in property <DashboardBalance> balance;
+        in property <[Metric]> summary;
+        in property <DashboardBalance> dashboard-balance;
+        in property <int> dashboard-range;
+        in property <string> dashboard-date;
+        in property <bool> confirm-entry-delete;
+        in property <int> range;
+        in property <string> date;
+        in property <bool> wide;
+        in property <bool> featured;
+        in property <bool> inline-ranges;
+        callback command(int);
+        callback select-project(int);
+        callback create-project(string);
+        callback describe(string);
+        callback select-range(int);
+        callback select-dashboard-range(int);
+        callback browse-today;
+        callback edit(string);
+        callback remove(string);
+        callback browse;
+        callback find-times;
+        callback add-project;
+        callback account;
+
+        spacing: 12px;
+        if root.featured: HorizontalLayout {
+            spacing: 12px;
+            TrackingControls {
+                data: root.data; featured: true;
+                horizontal-stretch: 2;
+                command(event) => { root.command(event); }
+                select-project(index) => { root.select-project(index); }
+                create-project(name) => { root.create-project(name); }
+                describe(text) => { root.describe(text); }
+            }
+            RunningClock { data: root.data; }
+        }
+        if !root.featured: TrackingControls {
+            data: root.data;
+            command(event) => { root.command(event); }
+            select-project(index) => { root.select-project(index); }
+            create-project(name) => { root.create-project(name); }
+            describe(text) => { root.describe(text); }
+        }
+        if !root.featured: RunningClock { data: root.data; }
+        HorizontalLayout {
+            spacing: 9px;
+            ActionButton {
+                label: "Zeit korrigieren"; align-left: true; tile: true;
+                detail: root.featured ? "Einträge nachtragen oder anpassen" : "";
+                icon: root.featured ? "M4 20 L8 19 L20 7 L17 4 L5 16 Z M14 7 L17 10" : "";
+                clicked => { root.find-times(); }
+            }
+            ActionButton {
+                label: "Projekt anlegen"; align-left: true; tile: true;
+                detail: root.featured ? "Neues Projekt erstellen" : "";
+                icon: root.featured ? "M3 6 H10 L12 8 H21 V19 H3 Z M12 10 V17 M9 14 H15" : "";
+                clicked => { root.add-project(); }
+            }
+            ActionButton {
+                label: "Arbeitszeitkonto"; align-left: true; tile: true;
+                detail: root.featured ? "Soll, Ist und Saldo anzeigen" : "";
+                icon: root.featured ? "M12 3 V21 M7 21 H17 M3 7 H21 M6 7 L2 15 H10 Z M18 7 L14 15 H22 Z" : "";
+                clicked => { root.account(); }
+            }
+        }
+        if root.wide: HorizontalLayout {
+            spacing: 12px;
+            TodayTable {
+                segments: root.segments; total: root.data.worked; date: root.date;
+                browse => { root.browse(); }
+                edit(id) => { root.edit(id); }
+                remove(id) => { root.remove(id); }
+            }
+            AccountSnapshot {
+                data: root.data; balance: root.balance; range: root.range; summary: root.summary;
+                inline-ranges: root.inline-ranges;
+                select(index) => { root.select-range(index); }
+            }
+        }
+        if !root.wide: AccountSnapshot {
+            data: root.data; balance: root.balance; range: root.range; summary: root.summary;
+                inline-ranges: root.inline-ranges;
+            select(index) => { root.select-range(index); }
+        }
+        if !root.wide: RecordedTimes {
+            segments: root.segments;
+            edit(id, bounds) => { root.edit(id); }
+        }
+    }
+
     export component MiniTimer inherits Window {
         title: "Projektzeit – Mini-Timer";
         background: Theme.rail;
@@ -904,12 +1253,12 @@ slint::slint! {
 
     export component AccountWindow inherits Window {
         title: "Projektzeit";
-        preferred-width: 1100px;
-        preferred-height: 760px;
+        preferred-width: 1376px;
+        preferred-height: 826px;
         min-width: 500px;
         min-height: 445px;
         default-font-size: 15px;
-        background: Theme.canvas;
+        background: Theme.rail;
 
         in property <int> page;
         in property <int> scheme;
@@ -925,6 +1274,10 @@ slint::slint! {
         in property <bool> has-report;
         in property <TrackingView> tracking;
         in property <[Metric]> summary;
+        in property <DashboardBalance> dashboard-balance;
+        in property <int> dashboard-range;
+        in property <string> dashboard-date;
+        in property <bool> confirm-entry-delete;
         in property <EntryForm> entry-form;
         in property <bool> show-entry-form;
         in property <ProjectForm> project-form;
@@ -944,19 +1297,19 @@ slint::slint! {
         in property <string> database-path;
         in property <string> opening-summary;
         in property <[AdjustmentRow]> adjustments;
-        in property <[Metric]> cards;
-        in property <[Metric]> metrics;
         in property <[DayRow]> rows;
         in property <[SegmentRow]> segments;
         in property <[string]> settings;
         in property <[string]> history;
         in property <string> preview-text;
         in property <bool> preview-ready;
-        private property <bool> compact: root.width < 900px;
-        private property <bool> narrow: root.width < 640px;
+        private property <bool> compact: root.width < 810px;
+        private property <bool> wide-overview: root.width >= 1120px;
 
         callback navigate(int);
         callback select-range(int);
+        callback select-dashboard-range(int);
+        callback browse-today;
         callback change-scheme(int);
         callback edit-schedule(int, string);
         callback change-mini-option(int, bool);
@@ -976,6 +1329,7 @@ slint::slint! {
         callback quick-project(string);
         callback describe-work(string);
         callback edit-record(string, bool);
+        callback request-delete-record(string);
         callback new-record;
         callback save-record(EntryForm);
         callback delete-record;
@@ -1001,30 +1355,47 @@ slint::slint! {
             y: 0px;
             width: root.width;
             height: root.height;
+            Rectangle {
+                height: 48px;
+                background: Theme.rail;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 14px;
+                    spacing: 10px;
+                    LineIcon {
+                        width: 28px; height: 28px; ink: Theme.rail-accent;
+                        shape: "M12 5 A8 8 0 1 0 12 21 A8 8 0 1 0 12 5 M9 2 H15 M12 2 V5 M17 6 L19 4 M12 9 V14";
+                    }
+                    Text { text: "Projektzeit"; color: Theme.rail-ink; font-size: 20px; font-weight: 710; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { label: "Mini-Timer"; nav: true; clicked => { root.show-mini(); } }
+                }
+            }
             if root.compact: PageNav {
                 compact: true; page: root.page;
                 navigate(index) => { root.navigate(index); }
             }
             HorizontalLayout {
                 if !root.compact: PageNav {
-                    width: 200px;
+                    width: 174px;
                     page: root.page;
                     navigate(index) => { root.navigate(index); }
                 }
-                VerticalLayout {
+                Rectangle {
                     horizontal-stretch: 1;
-                    padding: root.compact ? 14px : 24px;
-                    spacing: 16px;
+                    background: Theme.canvas;
+                    border-radius: 14px;
+                    VerticalLayout {
+                    padding: root.compact ? 13px : 22px;
+                    spacing: 14px;
                     HorizontalLayout {
-                        spacing: 10px;
+                        spacing: 13px;
+                        if root.page == 0: GreetingMark {}
                         VerticalLayout {
-                            spacing: 3px;
-                            if root.page == 0: Label { text: root.subheading; font-size: 12px; }
-                            Text { text: root.heading; color: Theme.ink; font-size: 28px; font-weight: 720; }
-                            if root.page != 0 && root.subheading != "": Label { text: root.subheading; wrap: word-wrap; }
+                            spacing: 2px;
+                            Text { text: root.heading; color: Theme.ink; font-size: root.page == 0 ? 34px : 28px; font-weight: 735; }
+                            if root.subheading != "": Label { text: root.subheading; font-size: root.page == 0 ? 15px : 14px; wrap: word-wrap; }
                         }
                         Rectangle { horizontal-stretch: 1; }
-                        ActionButton { label: "Mini-Timer"; clicked => { root.show-mini(); } }
                     }
                     if root.feedback != "": Label { text: root.feedback; color: Theme.green; wrap: word-wrap; }
 
@@ -1061,20 +1432,23 @@ slint::slint! {
                             alignment: start;
                             spacing: 14px;
 
-                            if root.page == 0: TrackingControls {
-                                data: root.tracking;
+                            if root.page == 0: TodayDashboard {
+                                data: root.tracking; segments: root.segments;
+                                wide: root.wide-overview; featured: root.width >= 970px;
+                                inline-ranges: root.width >= 1470px || (!root.wide-overview && root.width >= 640px);
+                                balance: root.dashboard-balance; range: root.dashboard-range;
+                                date: root.dashboard-date; summary: root.summary;
                                 command(event) => { root.tracking-action(event); }
                                 select-project(index) => { root.tracking-project(index); }
                                 create-project(name) => { root.quick-project(name); }
                                 describe(text) => { root.describe-work(text); }
-                            }
-                            if root.page == 0: DayStatus { data: root.tracking; compact: root.narrow; }
-                            if root.page == 0 && root.summary.length > 0: StatCards { items: root.summary; narrow: root.narrow; }
-                            if root.page == 0: HorizontalLayout {
-                                spacing: 8px;
-                                ActionButton { label: "+ Zeit nachtragen"; clicked => { root.new-record(); } }
-                                ActionButton { label: "+ Projekt"; clicked => { root.navigate(3); root.edit-project(""); } }
-                                Rectangle { horizontal-stretch: 1; }
+                                select-range(range) => { root.select-dashboard-range(range); }
+                                edit(id) => { root.edit-record(id, false); }
+                                remove(id) => { root.request-delete-record(id); }
+                                browse => { root.browse-today(); }
+                                find-times => { root.new-record(); }
+                                add-project => { root.navigate(3); root.edit-project(""); }
+                                account => { root.navigate(2); }
                             }
                             if (root.page == 1 || root.page == 2) && root.notice != "":
                                 Label { text: root.notice; wrap: word-wrap; }
@@ -1090,12 +1464,13 @@ slint::slint! {
                             if root.page == 1 && root.show-entry-form: RecordEditor {
                                 data: root.entry-form; choices: root.assignment-choices;
                                 names: root.assignment-names; selection: root.assignment-index;
+                                propose-delete: root.confirm-entry-delete;
                                 save(fields) => { root.save-record(fields); }
                                 cancel => { root.cancel-record(); }
                                 remove => { root.delete-record(); }
                             }
-                            if root.page == 0 || root.page == 1: RecordedTimes {
-                                segments: root.segments; history: root.page == 1;
+                            if root.page == 1: RecordedTimes {
+                                segments: root.segments; history: true;
                                 edit(id, bounds) => { root.edit-record(id, bounds); }
                             }
                             if root.page == 1 && root.rows.length > 0: Card {
@@ -1188,6 +1563,7 @@ slint::slint! {
                                 }
                             }
                         }
+                    }
                     }
                 }
             }

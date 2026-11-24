@@ -36,8 +36,8 @@ use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, Ve
 use input::{display_date, duration, parse_change, parse_date};
 use preferences::{APPEARANCE_KEY, MiniPreferences, Point, ScheduleDraft};
 use view::{
-    AccountWindow, AdjustmentRow, DayRow, EditFields, Metric, MiniOptions, MiniTimer,
-    ScheduleInputs,
+    AccountWindow, AdjustmentRow, DashboardBalance, DayRow, EditFields, Metric, MiniOptions,
+    MiniTimer, ScheduleInputs,
 };
 use window::{Visibility, WindowAction, WindowState};
 
@@ -87,6 +87,7 @@ struct Controller {
     page: Page,
     selected: NaiveDate,
     range: Range,
+    dashboard_range: Range,
     pending: Option<Preview>,
     displayed_report: Option<(NaiveDate, Reports)>,
     scheme: i32,
@@ -141,6 +142,7 @@ pub(super) fn run(path: PathBuf, zone: Option<&OsStr>) -> Result<(), String> {
         page: Page::Today,
         selected: today,
         range: Range::default(),
+        dashboard_range: Range::Day,
         pending: None,
         displayed_report: None,
         scheme,
@@ -197,6 +199,22 @@ fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller>>) {
         };
         state.render(window)
     }));
+    window.on_select_dashboard_range(action(window, controller, |state, window, index| {
+        state.dashboard_range = match index {
+            1 => Range::Week,
+            2 => Range::Month,
+            _ => Range::Day,
+        };
+        let at = now();
+        state.render_today(window, local_date(at, state.zone), at)
+    }));
+    let browse_today = action(window, controller, |state, window, ()| {
+        state.selected = local_date(now(), state.zone);
+        state.range = Range::Day;
+        state.page = Page::Times;
+        state.render(window)
+    });
+    window.on_browse_today(move || browse_today(()));
     window.on_change_scheme(action(window, controller, |state, window, index: i32| {
         let value = THEMES
             .get(index as usize)
@@ -712,19 +730,54 @@ impl Controller {
             today,
             at,
         ))?;
-        window.set_summary(model(vec![
-            optional_metric(
-                "Diese Woche",
-                week.as_ref().map(|week| week.period.finalized_totals.delta),
+        window.set_dashboard_date(display_date(today).into());
+        let (index, report, period) = match self.dashboard_range {
+            Range::Day => (0, None, String::new()),
+            Range::Week => (
+                1,
+                week.as_ref(),
+                format!("Kalenderwoche {}", today.iso_week().week()),
             ),
-            optional_metric(
-                "Dieser Monat",
-                month
-                    .as_ref()
-                    .map(|month| month.period.finalized_totals.delta),
-            ),
-            optional_metric("Gesamtsaldo", week.and_then(|week| week.balance_as_of)),
-        ]));
+            Range::Month => (2, month.as_ref(), month_year(today)),
+        };
+        window.set_dashboard_range(index);
+        window.set_dashboard_balance(DashboardBalance {
+            due: report
+                .map_or_else(dash, |report| {
+                    duration(report.period.finalized_totals.target, false)
+                })
+                .into(),
+            actual: report
+                .map_or_else(dash, |report| duration(report.period.totals.actual, false))
+                .into(),
+            delta: report
+                .map_or_else(dash, |report| {
+                    duration(report.period.finalized_totals.delta, true)
+                })
+                .into(),
+            period: period.into(),
+        });
+        let balances = if week.is_some() || month.is_some() {
+            vec![
+                optional_metric(
+                    "Diese Woche",
+                    week.as_ref().map(|week| week.period.finalized_totals.delta),
+                ),
+                optional_metric(
+                    "Dieser Monat",
+                    month
+                        .as_ref()
+                        .map(|month| month.period.finalized_totals.delta),
+                ),
+                optional_metric(
+                    "Gesamtsaldo",
+                    week.or(month).and_then(|report| report.balance_as_of),
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        window.set_summary(model(balances));
         Ok(())
     }
 

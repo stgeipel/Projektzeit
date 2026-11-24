@@ -119,6 +119,15 @@ pub(super) fn connect(window: &AccountWindow, controller: &Rc<RefCell<Controller
         )
         .tuple_callback(),
     );
+    window.on_request_delete_record(action(
+        window,
+        controller,
+        |state, window, id: SharedString| {
+            state.open_record(window, &id, false)?;
+            window.set_confirm_entry_delete(true);
+            Ok(())
+        },
+    ));
     window.on_new_record(
         action(window, controller, |state, window, ()| {
             state.open_record(window, "", false)
@@ -471,6 +480,13 @@ impl Controller {
             selection,
             projects: self.tracking.selector_names.clone(),
             worked: duration(day.work_seconds, false).into(),
+            clock: format!(
+                "{:02}:{:02}:{:02}",
+                day.work_seconds / 3600,
+                day.work_seconds / 60 % 60,
+                day.work_seconds % 60
+            )
+            .into(),
             remaining: remaining
                 .map_or_else(dash, |value| duration(value, false))
                 .into(),
@@ -672,6 +688,7 @@ impl Controller {
             form.project = "0".into();
         }
         self.tracking.editor = Some(editor);
+        window.set_confirm_entry_delete(false);
         self.show_assignments(window, &form.project);
         window.set_entry_form(form);
         window.set_show_entry_form(true);
