@@ -86,7 +86,7 @@ fn workbook(reports: &Reports, as_of: NaiveDate) -> Result<Workbook, XlsxError> 
     for (index, (label, value)) in [
         ("Anfangssaldo", report.opening_balance),
         ("Ist netto", Some(report.totals.actual)),
-        ("Soll bis Stichtag", Some(report.totals.target)),
+        ("Fälliges Soll", Some(report.finalized_totals.target)),
         ("Volles Plansoll", Some(report.full_planned_target)),
         (
             "Verbleibendes Plansoll",
@@ -96,7 +96,7 @@ fn workbook(reports: &Reports, as_of: NaiveDate) -> Result<Workbook, XlsxError> 
             "Genehmigte Gutschriften",
             Some(report.totals.approved_credits),
         ),
-        ("Differenz", Some(report.totals.delta)),
+        ("Abgeschlossener Saldo", Some(report.finalized_totals.delta)),
         ("Manuelle Korrekturen", Some(report.totals.adjustments)),
         ("Schlusssaldo", report.closing_balance),
         ("Gesamtsaldo am Stichtag", reports.balance_as_of),
@@ -148,6 +148,7 @@ mod tests {
         };
         let observations = Observations {
             actual: [(date, 90 * 60 + 15)].into(),
+            today_finished: true,
             ..Observations::default()
         };
         let period = account

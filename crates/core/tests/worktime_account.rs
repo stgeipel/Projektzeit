@@ -131,7 +131,8 @@ fn weekly_progress_and_midweek_schedule_change_respect_effective_dates() {
     assert_eq!(report.totals.actual, 3600);
     assert_eq!(report.totals.target, 23 * 3600);
     assert_eq!(report.full_planned_target, 30 * 3600);
-    assert_eq!(report.remaining_planned_target, 7 * 3600);
+    assert_eq!(report.finalized_totals.target, 16 * 3600);
+    assert_eq!(report.remaining_planned_target, 14 * 3600);
     assert!(report.provisional);
     assert_eq!(report.days[3].planned_target, Some(0));
     assert_eq!(report.days[3].observed, None);

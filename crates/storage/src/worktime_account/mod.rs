@@ -1,7 +1,7 @@
 //! Transactional account configuration, audit history, and report snapshots.
 
 mod changes;
-mod queries;
+pub(crate) mod queries;
 
 use std::{error::Error, fmt};
 
@@ -272,24 +272,36 @@ pub fn report(
     today: NaiveDate,
     observed_at: Timestamp,
 ) -> Result<Reports, StoreError> {
+    report_live(db, period, as_of, today, observed_at, None)
+}
+
+pub fn report_live(
+    db: &mut Connection,
+    period: Period,
+    as_of: NaiveDate,
+    today: NaiveDate,
+    observed_at: Timestamp,
+    trusted_entry: Option<i64>,
+) -> Result<Reports, StoreError> {
     if as_of > today {
         return Err(StoreError::InvalidReportDates);
     }
     let transaction = db.transaction()?;
     let account = queries::settings(&transaction)?.account();
-    let observations = queries::observations(&transaction, observed_at)?;
+    let mut observations = queries::observations(&transaction, observed_at, trusted_entry)?;
+    observations.today_finished = queries::today_finished(&transaction, today)?;
     let period = account.report(period, as_of, today, &observations)?;
     let balance_as_of = if period.through == as_of && period.closing_balance.is_some() {
         period.closing_balance
     } else {
-        account.balance_as_of(as_of, &observations)?
+        account.finalized_balance_as_of(as_of, today, &observations)?
     };
     let balance_excludes_open_time = balance_as_of.is_some()
         && observations
             .uncertain_since
             .is_some_and(|date| date <= as_of);
-    let balance_provisional =
-        balance_as_of.is_some() && (as_of == today || balance_excludes_open_time);
+    let balance_provisional = balance_as_of.is_some()
+        && ((as_of == today && !observations.today_finished) || balance_excludes_open_time);
     transaction.commit()?;
     Ok(Reports {
         period,
@@ -334,4 +346,21 @@ pub fn apply(
     changes::write(&transaction, fresh.change, occurred_at.timestamp_millis())?;
     transaction.commit()?;
     Ok(())
+}
+
+pub fn daily_target(db: &Connection, date: NaiveDate) -> Result<Option<u32>, StoreError> {
+    use chrono::Datelike;
+    use rusqlite::OptionalExtension;
+    let override_seconds = db
+        .query_row(
+            "SELECT target_seconds FROM daily_target_overrides WHERE effective_date=?1",
+            [date.to_string()],
+            |row| row.get::<_, u32>(0),
+        )
+        .optional()?;
+    match override_seconds {
+        Some(seconds) => Ok(Some(seconds)),
+        None => Ok(schedule_at(db, date)?
+            .map(|schedule| schedule.weekdays()[date.weekday().num_days_from_monday() as usize])),
+    }
 }

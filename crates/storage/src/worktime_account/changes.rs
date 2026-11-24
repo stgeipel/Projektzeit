@@ -25,7 +25,8 @@ pub(super) fn preview(
     let account = settings.account();
     let mut proposed = account.clone();
     let effective_date = simulate(&mut change, &settings, &mut proposed)?;
-    let observations = queries::observations(db, observed_at)?;
+    let mut observations = queries::observations(db, observed_at, None)?;
+    observations.today_finished = queries::today_finished(db, as_of)?;
     Ok(Preview {
         change,
         revision: revision(db)?,
@@ -123,7 +124,7 @@ fn impact(
     as_of: NaiveDate,
     effective_date: NaiveDate,
 ) -> Result<Impact, StoreError> {
-    let balance = match account.balance_as_of(as_of, observations) {
+    let balance = match account.finalized_balance_as_of(as_of, as_of, observations) {
         Ok(Some(value)) => BalanceState::Calculated(value),
         Ok(None) => BalanceState::BeforeOpening,
         Err(AccountError::MissingOpening) => BalanceState::Unconfigured,

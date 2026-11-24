@@ -3,12 +3,14 @@
 use std::{fmt, path::Path, time::Duration};
 
 use rusqlite::{Connection, TransactionBehavior};
+pub mod tracker;
 pub mod worktime_account;
 
 const APPLICATION_ID: i32 = 0x505A4549; // PZEI
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_worktime_account.sql"),
+    include_str!("../migrations/0003_tracking.sql"),
 ];
 
 #[derive(Debug)]

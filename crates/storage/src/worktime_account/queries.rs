@@ -130,51 +130,93 @@ pub(super) fn settings(db: &Connection) -> Result<Settings, StoreError> {
 pub(super) fn observations(
     db: &Connection,
     observed_at: Timestamp,
+    trusted_entry: Option<i64>,
 ) -> Result<Observations, StoreError> {
+    let active = crate::tracker::active(db).map_err(|error| match error {
+        crate::tracker::Error::Sqlite(error) => StoreError::Sqlite(error),
+        _ => StoreError::InvalidStoredValue("active workday"),
+    })?;
+    let open_day_since = db
+        .query_row(
+            "SELECT local_date FROM workdays WHERE ended_at_utc_ms IS NULL",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|date| parse_date(&date))
+        .transpose()?;
     let mut statement = db.prepare(
-        "SELECT day.timezone, entry.started_at_utc_ms, entry.ended_at_utc_ms
+        "SELECT entry.id, day.timezone, entry.started_at_utc_ms, entry.ended_at_utc_ms
          FROM timeline_entries AS entry JOIN workdays AS day ON day.id = entry.workday_id
          WHERE entry.kind = 'work' AND entry.started_at_utc_ms <= ?1
          ORDER BY entry.started_at_utc_ms",
     )?;
     let rows = statement.query_map([observed_at.timestamp_millis()], |row| {
         Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<i64>>(3)?,
         ))
     })?;
     let mut entries = Vec::new();
-    let mut uncertain_since = None;
     for row in rows {
-        let (zone, start, end) = row?;
+        let (id, zone, start, end) = row?;
         let zone: Tz = zone
             .parse()
             .map_err(|_| StoreError::InvalidStoredValue("timezone"))?;
         let start = parse_timestamp(start)?;
-        if let Some(end) = end {
-            let span = TimeSpan::new(start, Some(parse_timestamp(end)?))
-                .map_err(|_| StoreError::InvalidStoredValue("ended_at_utc_ms"))?;
-            entries.push((
-                zone,
-                TimelineEntry::Work(WorkSegment::new(span, None, None)),
-            ));
-        } else {
-            // Until recovery can approve an observation cutoff, open elapsed time is uncertain.
-            let date = start.with_timezone(&zone).date_naive();
-            uncertain_since =
-                Some(uncertain_since.map_or(date, |previous: NaiveDate| previous.min(date)));
-        }
+        let end = match end {
+            Some(end) => parse_timestamp(end)?,
+            None if trusted_entry == Some(id) => observed_at,
+            None => continue,
+        };
+        let span = TimeSpan::new(start, Some(end))
+            .map_err(|_| StoreError::InvalidStoredValue("ended_at_utc_ms"))?;
+        entries.push((
+            zone,
+            TimelineEntry::Work(WorkSegment::new(span, None, None)),
+        ));
     }
     let actual = attribute_work(
         entries.iter().map(|(zone, entry)| (*zone, entry)),
         observed_at,
     )?;
+    let uncertain_since = open_day_since.filter(|_| {
+        active.as_ref().map(|active| active.entry_id) != trusted_entry || trusted_entry.is_none()
+    });
     Ok(Observations {
         actual,
         uncertain_since,
+        open_day_since,
         ..Observations::default()
     })
+}
+
+pub(crate) fn today_finished(db: &Connection, today: NaiveDate) -> Result<bool, StoreError> {
+    let mut stmt = db.prepare(
+        "SELECT timezone, ended_at_utc_ms FROM workdays
+         WHERE finalized = 1 AND ended_at_utc_ms IS NOT NULL
+           AND ended_at_utc_ms >= ?1 AND ended_at_utc_ms < ?2",
+    )?;
+    let midnight = today
+        .and_hms_opt(0, 0, 0)
+        .ok_or(StoreError::InvalidStoredValue("report date"))?
+        .and_utc();
+    let lower = (midnight - chrono::TimeDelta::days(1)).timestamp_millis();
+    let upper = (midnight + chrono::TimeDelta::days(2)).timestamp_millis();
+    for result in stmt.query_map([lower, upper], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (zone, end) = result?;
+        let zone: Tz = zone
+            .parse()
+            .map_err(|_| StoreError::InvalidStoredValue("timezone"))?;
+        if parse_timestamp(end)?.with_timezone(&zone).date_naive() == today {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn parse_date(value: &str) -> Result<NaiveDate, StoreError> {

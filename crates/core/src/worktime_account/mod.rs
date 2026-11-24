@@ -145,6 +145,22 @@ pub struct Observations {
     pub approved_credits: BTreeMap<NaiveDate, Seconds>,
     /// Earliest local date with unclassified open time omitted from this projection.
     pub uncertain_since: Option<NaiveDate>,
+    /// An open workday can span more than one calendar date.
+    pub open_day_since: Option<NaiveDate>,
+    pub today_finished: bool,
+}
+
+impl Observations {
+    fn settlement_date(&self, through: NaiveDate, today: NaiveDate) -> Option<NaiveDate> {
+        let mut date = through.min(today);
+        if date == today && !self.today_finished {
+            date = date.pred_opt()?;
+        }
+        if let Some(open) = self.open_day_since.filter(|&open| open <= date) {
+            date = open.pred_opt()?;
+        }
+        Some(date)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
@@ -179,6 +195,7 @@ pub struct DayReport {
     pub planned_target: Option<u32>,
     /// Absent on future dates and dates before the account begins.
     pub observed: Option<Totals>,
+    pub finalized: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -187,6 +204,7 @@ pub struct PeriodReport {
     pub through: NaiveDate,
     pub days: Vec<DayReport>,
     pub totals: Totals,
+    pub finalized_totals: Totals,
     pub full_planned_target: Seconds,
     pub remaining_planned_target: Seconds,
     pub opening_balance: Option<Seconds>,
@@ -226,6 +244,33 @@ impl Account {
         Ok(Some(totals.apply(opening.signed_seconds)?))
     }
 
+    /// Settled work and due targets exclude open dates. Explicit balance
+    /// adjustments apply through the requested date independently.
+    pub fn finalized_balance_as_of(
+        &self,
+        through: NaiveDate,
+        today: NaiveDate,
+        observations: &Observations,
+    ) -> Result<Option<Seconds>, AccountError> {
+        let opening = self.opening.ok_or(AccountError::MissingOpening)?;
+        let through = through.min(today);
+        if through < opening.effective_date {
+            return Ok(None);
+        }
+        let adjustments = self.adjustments_by_date(opening.effective_date, through)?;
+        let mut totals = Totals::default();
+        if let Some(settled) = observations.settlement_date(through, today) {
+            for date in dates(opening.effective_date, settled) {
+                totals =
+                    totals.checked_add(self.daily_totals(date, observations, &adjustments)?)?;
+            }
+        }
+        totals.adjustments = adjustments
+            .values()
+            .try_fold(0, |sum, &value| add(sum, value))?;
+        Ok(Some(totals.apply(opening.signed_seconds)?))
+    }
+
     /// The cutoff is inclusive. Dates after it contribute only to the planned target.
     pub fn report(
         &self,
@@ -242,17 +287,20 @@ impl Account {
         } else if first_accounted == opening.effective_date {
             Some(opening.signed_seconds)
         } else {
-            self.balance_as_of(
+            self.finalized_balance_as_of(
                 period
                     .start
                     .pred_opt()
                     .ok_or(AccountError::InvalidDateRange)?,
+                today,
                 observations,
             )?
         };
         let adjustments = self.adjustments_by_date(first_accounted, through)?;
         let mut days = Vec::new();
         let mut totals = Totals::default();
+        let mut finalized_totals = Totals::default();
+        let settled_through = observations.settlement_date(through, today);
         let mut full_planned_target = 0;
         for date in dates(period.start, period.end) {
             let planned_target = if date >= first_accounted {
@@ -264,9 +312,14 @@ impl Account {
             } else {
                 None
             };
+            let finalized =
+                planned_target.is_some() && settled_through.is_some_and(|cutoff| date <= cutoff);
             let observed = if planned_target.is_some() && date <= through {
                 let daily = self.daily_totals(date, observations, &adjustments)?;
                 totals = totals.checked_add(daily)?;
+                if finalized {
+                    finalized_totals = finalized_totals.checked_add(daily)?;
+                }
                 Some(daily)
             } else {
                 None
@@ -275,10 +328,12 @@ impl Account {
                 date,
                 planned_target,
                 observed,
+                finalized,
             });
         }
+        finalized_totals.adjustments = totals.adjustments;
         let closing_balance = opening_balance
-            .map(|opening| totals.apply(opening))
+            .map(|opening| finalized_totals.apply(opening))
             .transpose()?;
         let excludes_open_time = closing_balance.is_some()
             && observations
@@ -289,11 +344,14 @@ impl Account {
             through,
             days,
             totals,
+            finalized_totals,
             full_planned_target,
-            remaining_planned_target: full_planned_target - totals.target,
+            remaining_planned_target: full_planned_target - finalized_totals.target,
             opening_balance,
             closing_balance,
-            provisional: through < period.end || through == today || excludes_open_time,
+            provisional: through < period.end
+                || (through == today && !observations.today_finished)
+                || excludes_open_time,
             excludes_open_time,
         })
     }
