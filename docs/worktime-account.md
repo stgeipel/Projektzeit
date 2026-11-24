@@ -15,7 +15,7 @@ Configuration changes and audit writes share one SQLite transaction. The preview
 
 Actual time is elapsed work, including work without a project. Breaks are separate intervals on the same timeline. Intervals are attributed to calendar dates in the recorded timezone, including local midnight and DST transitions. Elapsed milliseconds are summed for each date before discarding the fractional second.
 
-The due target and settled balance include past dates and explicitly completed workdays. The current unfinished day contributes to observed actual and daily progress. Its unfinished balance stays outside the settled total. A currently open workday stays unsettled across midnight. On restart the user classifies time since the last persisted checkpoint. The weekly view follows ISO Monday–Sunday boundaries. A month's carryover is the settled balance before the month, or the opening amount if the account starts during that month.
+The due target and settled balance include past dates and explicitly completed workdays. The current unfinished day contributes to observed actual and daily progress. Its unfinished balance stays outside the settled total. A currently open workday stays unsettled across midnight. On restart the user classifies time since the last persisted checkpoint. Confirmed time through that checkpoint stays visible during recovery. The weekly view follows ISO Monday–Sunday boundaries. A month's carryover is the settled balance before the month, or the opening amount if the account starts during that month.
 
 The full planned target includes future dates. Schedule resolution uses the plan in force on each date and applies any override. Manual balance adjustments contribute through the report cutoff, including adjustments dated today.
 
@@ -25,4 +25,4 @@ Example: an opening of +20:00 h, 160:00 h of actual work, and a 152:00 h target 
 
 **Arbeitszeitkonto** exports a monthly account snapshot with signed numeric minutes. **Zeiten** exports the selected work and break entries with numeric dates and durations, or creates a copy of the supplied template. Existing destination files are preserved. [Workbook mapping and export limits](workbook-compatibility.md)
 
-Migrations 0002 and 0003 add account configuration, project descriptions, workday checkpoints, and completion status. Previously stored projects, workdays, timeline entries, and settings remain available.
+Migrations 0002 and 0003 add account configuration, project descriptions, workday checkpoints, and completion status. Migration 0004 closes legacy open workdays that have no ongoing booking at the last persisted boundary. Previously stored projects, workdays, timeline entries, and settings remain available.

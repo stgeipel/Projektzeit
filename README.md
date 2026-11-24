@@ -32,7 +32,7 @@ The timezone argument is optional when the system IANA zone can be detected. On 
 
 The mini-timer shares the current session with the main window. It opens on minimize by default and the automatic instance closes when you restore the main window. On Windows the initial position uses the monitor's work area with a 24-logical-pixel right and bottom margin. **Fensterposition zurücksetzen** restores that default.
 
-The backup command creates a consistent SQLite snapshot at a new path. To work with the snapshot, close the app and start it with that path as the database argument. Windows autostart opens the same database and timezone used when enabling it.
+The backup command publishes a fully written SQLite snapshot at a new path. The desktop holds an OS lock in a sidecar file beside the database to prevent two application instances from editing it together. To work with the snapshot, close the app and start it with that path as the database argument. Windows autostart opens the same database and timezone used when enabling it.
 
 ## Checks
 
