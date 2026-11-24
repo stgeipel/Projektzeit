@@ -17,7 +17,11 @@ pub fn attribute_work<'a>(
     let mut millis_by_date = BTreeMap::new();
     for (zone, entry) in entries {
         if let TimelineEntry::Work(work) = entry {
-            allocate(work.span(), zone, cutoff, &mut millis_by_date)?;
+            visit_local_intervals(work.span(), zone, cutoff, |date, start, end| {
+                let total = millis_by_date.entry(date).or_default();
+                *total = add(*total, (end - start).num_milliseconds())?;
+                Ok(())
+            })?;
         }
     }
     Ok(millis_by_date
@@ -26,11 +30,12 @@ pub fn attribute_work<'a>(
         .collect())
 }
 
-fn allocate(
+/// Visit the pieces of an interval in UTC order, splitting at local date changes.
+pub fn visit_local_intervals(
     span: TimeSpan,
     zone: Tz,
     cutoff: Timestamp,
-    millis_by_date: &mut BTreeMap<NaiveDate, i64>,
+    mut visit: impl FnMut(NaiveDate, Timestamp, Timestamp) -> Result<(), AccountError>,
 ) -> Result<(), AccountError> {
     let mut cursor = span.start();
     let end = span.end().map_or(cutoff, |end| end.min(cutoff));
@@ -38,8 +43,7 @@ fn allocate(
         let date = cursor.with_timezone(&zone).date_naive();
         let midnight = date.succ_opt().ok_or(AccountError::InvalidDateRange)?;
         let next = boundary_after(zone, date, midnight, cursor)?.min(end);
-        let total = millis_by_date.entry(date).or_default();
-        *total = add(*total, (next - cursor).num_milliseconds())?;
+        visit(date, cursor, next)?;
         cursor = next;
     }
     Ok(())

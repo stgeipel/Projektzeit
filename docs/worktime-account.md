@@ -1,6 +1,6 @@
 # Worktime account
 
-The standalone Slint window uses the same SQLite file and work timeline as the tracker foundation. It provides the account information for Today, ISO weeks, calendar months, and settings. The main tracker and its floating timer can consume the same report service when they are introduced. This window configures and reports existing time records. Recording live sessions and confirming recovery intervals belong to the tracker.
+The standalone Slint window uses the same SQLite file and work timeline as the tracker foundation. It shows today's daily timeline and balance, daily and ISO-week or calendar-month summaries under Zeiten, and the monthly worktime account under Berichte. Projects lists the active and archived projects stored in the database. The main tracker and its floating timer can consume the same report service when they are introduced. This window configures and reports existing time records. Recording live sessions and confirming recovery intervals belong to the tracker.
 
 ## Configuration and correction
 
@@ -21,6 +21,6 @@ Example: an opening of +20:00 h, 160:00 h of actual work, and a 152:00 h target 
 
 ## XLSX
 
-The week and month views export the displayed report snapshot to a new workbook with one sheet, `Arbeitszeitkonto`. Signed amounts are numeric minutes with fractional minutes for seconds, which Excel can sum regardless of its handling of negative time serials. An existing destination is preserved. The existing template file is kept separate, and the future project export can add this report as an optional sheet from the same service.
+The time and report views export the displayed report snapshot to a new workbook with one sheet, `Arbeitszeitkonto`. Signed amounts are numeric minutes with fractional minutes for seconds, which Excel can sum regardless of its handling of negative time serials. An existing destination is preserved. The existing template file is kept separate, and the future project export can add this report as an optional sheet from the same service.
 
 Schema migration 0002 adds the account tables and upgrades existing databases in place. Existing project, workday, timeline, and settings rows remain available.

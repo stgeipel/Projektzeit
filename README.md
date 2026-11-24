@@ -1,6 +1,6 @@
 # Projektzeit
 
-Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. The workspace includes the Rust time-tracking foundation and a standalone German Slint desktop window for the worktime account. Continuous tracking commands, the main tracker, the mini-timer, and project exports are planned separately.
+Projektzeit is an offline-first Windows workday tracker in development. The [product specification](PROJECT_SPEC.md) defines the finished application. The workspace includes the Rust time-tracking foundation and a German Slint desktop window for recorded workdays, projects, and the worktime account. Continuous tracking commands, the main tracker, the mini-timer, and project exports are planned separately.
 
 ## Build and run
 
@@ -17,7 +17,7 @@ The command opens or creates the specified database, runs pending migrations, an
 
 ## Worktime account
 
-On Windows, start the optional desktop window with:
+On Windows, start the desktop window with:
 
 ```sh
 cargo run --locked -p projektzeit --features desktop-account -- --account-ui ./projektzeit-dev.sqlite Europe/Berlin
@@ -25,7 +25,7 @@ cargo run --locked -p projektzeit --features desktop-account -- --account-ui ./p
 
 The timezone argument is optional when the system IANA zone can be detected. On Linux, the desktop feature additionally needs a graphical session and Fontconfig development files (for example, `libfontconfig-dev` on Ubuntu).
 
-Open **Einstellungen**, enter a weekly schedule (the seven daily durations must add up to the weekly total), and set the opening balance and its effective date. Review each preview before saving. Use **Woche** or **Monat** to select a cutoff date or save an account-only XLSX to a new file. [Worktime-account rules and examples](docs/worktime-account.md)
+Open **Einstellungen**, enter a weekly schedule (the seven daily durations must add up to the weekly total), and set the opening balance and its effective date. Review each preview before saving. Use **Zeiten** for daily, weekly, or monthly summaries and **Berichte** for the monthly worktime account. Both pages can save an account-only XLSX to a new file. **Einstellungen** also supports system, light, and dark appearance. [Worktime-account rules and examples](docs/worktime-account.md)
 
 ## Checks
 

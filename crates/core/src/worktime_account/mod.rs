@@ -2,7 +2,7 @@
 
 mod attribution;
 
-pub use attribution::attribute_work;
+pub use attribution::{attribute_work, visit_local_intervals};
 
 use std::{collections::BTreeMap, fmt};
 
@@ -101,6 +101,13 @@ pub struct Period {
 }
 
 impl Period {
+    pub fn day(date: NaiveDate) -> Self {
+        Self {
+            start: date,
+            end: date,
+        }
+    }
+
     pub fn iso_week(date: NaiveDate) -> Result<Self, AccountError> {
         let start = date
             .week(Weekday::Mon)
